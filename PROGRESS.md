@@ -71,3 +71,60 @@ browser (Playwright: clicks, typing, screenshots).
 | U2 | Integration lib (witness/prover-worker/proof/chain/scan/store) | me | ✅ |
 | U3 | Browser E2E PASSES: create→fund→deposit(100)→**private send(40)** — real in-browser proofs + on-chain | me | ✅ |
 | U4 | Real on-chain deposit from the browser: tx cd221ebe… · stellar-sdk 16 (proto-23 meta) | me | ✅ |
+
+---
+
+# /goal — Phase 2: real-XLM settlement (deposit/withdraw backed by native XLM)
+
+GOAL: make the shielded pool hold REAL value. `deposit` pulls native XLM from the
+user into the contract (custody); `withdraw` releases XLM to any Stellar address.
+Value conservation is already enforced in-circuit (`publicAmount + Σin = Σout`);
+this wires the asset-custody edge that `settle_public_amount` currently no-ops.
+Done when a user deposits real testnet XLM, transfers privately, and withdraws
+real XLM to a different account — validated in-browser + on-chain, with the
+contract's XLM custody balance reconciling.
+
+## Independent pieces
+
+### P2-A · Contract settlement (crates/veil-contract) — CRITICAL, security-sensitive
+- `init` takes `token: Address` (testnet native-XLM SAC); store it.
+- `settle_public_amount`: decode sign of `publicAmount` —
+  `0` → no-op; `0<pa<2^64` → DEPOSIT `token.transfer(from=depositor,to=contract,pa)`;
+  `pa>r-2^64` → WITHDRAW amount=`r-pa`, `token.transfer(from=contract,to=recipient,amount)`.
+- Ordering stays validate→verify→effect→**settle**→emit (transfer last = atomic revert on failure).
+- Deposit requires `depositor.require_auth()`; withdraw releases from the contract's own balance.
+- **Deliverable/verify:** native tests with the soroban test token — deposit moves
+  funds in, withdraw moves them out, balances reconcile, auth enforced, insufficient
+  balance reverts. `cargo test -p veil-contract` green; builds wasm32v1-none.
+
+### P2-B · ExtData + extDataHash re-freeze (veil-crypto/SDK + app crypto + INTERFACES)
+- Add `settlement_address` (Stellar address) to `ExtData`, bound into `extDataHash`
+  (so a relayer can't redirect a withdraw). Update INTERFACES §4, re-pin the
+  empty-ExtData vector, and mirror in BOTH `crates/veil-sdk/src/tx.rs` AND
+  `app/src/lib/crypto.ts` (the gate test must still pass on both sides).
+- **Deliverable/verify:** veil-crypto/SDK tests + `app` `crypto.test.ts` green with
+  the new hash; a contract test asserts SDK-hash == contract-hash for a sample.
+
+### P2-C · Wallet integration (app: chain.ts, witness.ts, store, UI)
+- Deposit: publicAmount=stroots(amount); submitTransact must carry the XLM-transfer
+  sub-invocation auth (stellar-sdk `prepareTransaction` collects it; fee-payer signs).
+- New Withdraw page: amount + destination G-address → `buildWithdraw` (publicAmount=r-amount),
+  `settlement_address`=dest; contract releases XLM.
+- Decimal/stroop scaling: note `amount` = stroops (1 XLM = 1e7); UI shows XLM.
+- **Deliverable/verify:** typecheck + build; integration smoke test for the
+  withdraw witness proves+verifies.
+
+### P2-D · Redeploy + browser e2e (the real proof)
+- Redeploy contract with the SAC token; update CONTRACT_ID + addresses.json.
+- Playwright e2e: fund fee acct → **deposit 1 XLM** (assert contract XLM balance +1,
+  fee acct −1) → private transfer → **withdraw 0.4 XLM to a 2nd account** (assert that
+  account received 0.4 on Horizon; shielded balance 0.6). Screenshots.
+- **Completion standard:** real XLM in → private movement → real XLM out, all with
+  real proofs, browser-validated, custody balance reconciles.
+
+## Key risks / decisions
+- ExtData change is breaking → must update SDK+TS+vectors+INTERFACES together (P2-B is the gate).
+- Soroban cross-contract auth for `token.transfer` (deposit) — verify sub-invocation
+  auth threads through simulate/prepare; this is the highest-risk integration point.
+- Pick the canonical testnet native-XLM SAC address; confirm 7-decimal stroop math.
+- Order: P2-A + P2-B first (can parallelize), then P2-C, then P2-D. ~1 focused session.
