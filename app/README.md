@@ -55,8 +55,15 @@ npm run dev        # http://localhost:5173
 (see `../deploy/addresses.json`). The deposit/withdraw `publicAmount` is an
 **unbacked testnet mint/burn** — real-XLM settlement is the Phase-2 edge.
 
+## Real XLM (Phase 2 — live)
+Deposit pulls **real testnet XLM** from your fee account into the pool contract;
+withdraw releases it to any Stellar address. Value conservation is enforced
+in-circuit; `settlement_address` is bound into `extDataHash` so a withdraw can't
+be redirected. The pool's on-chain XLM custody always equals deposits − withdrawals.
+E2E proven: deposit 2 XLM → withdraw 0.4 XLM, balance 2 → 1.6, real on-chain.
+
 ## Honest notes
-- Test-credits are unbacked (no real asset settlement yet).
-- The fee-payer account is generated/stored in the browser (testnet only).
+- Amounts are in stroops (1 XLM = 10⁷); the fee-payer account is generated/stored
+  in the browser (testnet only).
 - Note discovery scans a recent RPC event window; the durable indexer (PLANE 4b)
   is the answer for full history.

@@ -3,7 +3,7 @@
 // Stellar account (separate from the Veil identity) that signs/pays.
 import {
   rpc, Contract, TransactionBuilder, Keypair, Account, xdr, nativeToScVal,
-  scValToNative, Address,
+  scValToNative, Address, authorizeEntry,
 } from "@stellar/stellar-sdk";
 import { CONTRACT_ID, NETWORK_PASSPHRASE, RPC_URL, FRIENDBOT } from "./types";
 import type { ProofBytes } from "./proof";
@@ -137,14 +137,31 @@ export async function submitTransact(
     signalsScVal(publicSignals),
     extScVal(ext)
   );
-  let tx = new TransactionBuilder(account, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
+  const tx = new TransactionBuilder(account, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(op)
     .setTimeout(120)
     .build();
 
-  tx = await s.prepareTransaction(tx); // simulate + assemble footprint/resources
-  tx.sign(kp);
-  const sent = await s.sendTransaction(tx);
+  // Simulate, then EXPLICITLY sign the auth entries the deposit's token.transfer
+  // requires (a non-root require_auth on the depositor). The depositor is the
+  // fee-payer, so we sign each address-credential entry with the same keypair.
+  const sim = await s.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw new Error(`simulate: ${sim.error}`);
+  const validUntil = (await s.getLatestLedger()).sequence + 100;
+  const auth = (sim as rpc.Api.SimulateTransactionSuccessResponse).result?.auth ?? [];
+  if (auth.length) {
+    const signed = await Promise.all(
+      auth.map((e) =>
+        e.credentials().switch().name === "sorobanCredentialsAddress"
+          ? authorizeEntry(e, kp, validUntil, NETWORK_PASSPHRASE)
+          : Promise.resolve(e)
+      )
+    );
+    (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.auth = signed;
+  }
+  const prepared = rpc.assembleTransaction(tx, sim).build();
+  prepared.sign(kp);
+  const sent = await s.sendTransaction(prepared);
   if (sent.status === "ERROR") throw new Error(`submit error: ${JSON.stringify(sent.errorResult)}`);
 
   const hash = sent.hash;

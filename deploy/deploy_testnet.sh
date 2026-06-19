@@ -24,9 +24,13 @@ echo "==> deploy"
 CID=$(stellar contract deploy --wasm "$WASM" --source "$IDENTITY" --network "$NETWORK")
 echo "    contract: $CID"
 
-echo "==> init (levels=20, root_history_size=64)"
+# Native XLM Stellar Asset Contract (testnet). Override with VEIL_TOKEN.
+TOKEN="${VEIL_TOKEN:-$(stellar contract id asset --asset native --network "$NETWORK")}"
+echo "    token (SAC): $TOKEN"
+
+echo "==> init (levels=20, root_history_size=64, token=native XLM)"
 stellar contract invoke --id "$CID" --source "$IDENTITY" --network "$NETWORK" \
-  -- init --admin "$ADDR" --config '{"levels":20,"root_history_size":64}'
+  -- init --admin "$ADDR" --config '{"levels":20,"root_history_size":64}' --token "$TOKEN"
 
 echo "==> sanity reads"
 stellar contract invoke --id "$CID" --source "$IDENTITY" --network "$NETWORK" -- get_config

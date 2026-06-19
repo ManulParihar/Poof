@@ -257,6 +257,9 @@ fn settle_public_amount(
     match decode_public_amount(public_amount)? {
         Settlement::None => {}
         Settlement::Deposit(amount) => {
+            // Tie the depositor's authorization to the root (transact) invocation
+            // so the nested token.transfer auth is part of one signed auth tree.
+            ext.settlement_address.require_auth();
             let token = TokenClient::new(env, &storage::token(env));
             let pool = env.current_contract_address();
             token.transfer(&ext.settlement_address, &MuxedAddress::from(&pool), &amount);

@@ -114,7 +114,7 @@ contract's XLM custody balance reconciling.
 - **Deliverable/verify:** typecheck + build; integration smoke test for the
   withdraw witness proves+verifies.
 
-### P2-D · Redeploy + browser e2e (the real proof)
+### P2-D · Redeploy + browser e2e ✅ DONE
 - Redeploy contract with the SAC token; update CONTRACT_ID + addresses.json.
 - Playwright e2e: fund fee acct → **deposit 1 XLM** (assert contract XLM balance +1,
   fee acct −1) → private transfer → **withdraw 0.4 XLM to a 2nd account** (assert that
@@ -128,3 +128,12 @@ contract's XLM custody balance reconciling.
   auth threads through simulate/prepare; this is the highest-risk integration point.
 - Pick the canonical testnet native-XLM SAC address; confirm 7-decimal stroop math.
 - Order: P2-A + P2-B first (can parallelize), then P2-C, then P2-D. ~1 focused session.
+
+## Phase-2 RESULT ✅ (real-XLM settlement live)
+- Contract `CDFXWV6K7CKTUYNTEHLJYUQU5WK2DRLMSWB57ASJN5VWB7UNIQPNIGV4` (token = native XLM SAC).
+- Native tests: deposit pulls 100→pool, withdraw releases 40, over-withdraw reverts (18/18 + 6/6).
+- extDataHash binds settlement_address (TS + Rust SDK + INTERFACES §4; vector 19770379…).
+- Browser e2e PASSES: create→fund→**deposit 2 XLM** (real XLM pulled, in-browser proof, on-chain
+  `d4521703…`)→**withdraw 0.4 XLM** to a Stellar address (`e8b48130…`); shielded balance 2→1.6.
+- On-chain pool custody reconciles: deposits − withdrawals (verified via SAC balance).
+- Auth: contract `settlement_address.require_auth()` (root-tied) + client `authorizeEntry` signing.
