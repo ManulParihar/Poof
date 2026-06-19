@@ -179,22 +179,24 @@ fn hash_ext_data(env: &Env, ext: &ExtData) -> BytesN<32> {
     reduced.to_bytes()
 }
 
-/// Phase-2 marker: settle a signed public amount (deposit pulls tokens in,
-/// withdraw releases them to `ExtData.recipient`). Phase 1 always passes
-/// `publicAmount = 0`; the conservation equation already enforces that
-/// in-circuit.
+/// Settle a signed public amount. A positive `publicAmount` is a deposit (mint
+/// into the pool); a field-negative one (`r - amount`) is a withdraw (burn).
+/// Value conservation `publicAmount + Σin = Σout` is already enforced in-circuit,
+/// so any accepted `publicAmount` is balanced by the output/input notes.
+///
+/// **Testnet build:** the mint/burn is accepted with NO real asset settlement —
+/// deposits create unbacked shielded test-credits and withdraws simply burn. The
+/// real-asset edge (pull/release a Stellar token via its SAC, gated on auth) is
+/// the documented Phase-2 marker; it slots in here without touching the ZK core.
 fn settle_public_amount(
     env: &Env,
-    public_amount: &BytesN<32>,
+    _public_amount: &BytesN<32>,
     _ext: &ExtData,
 ) -> Result<(), Error> {
     let _ = env;
-    // Phase 1: must be zero. A non-zero amount is a Phase-2 path that is
-    // intentionally not wired yet — reject loudly rather than silently ignore.
-    if public_amount.to_array() != [0u8; 32] {
-        // Designed-for, not built: token transfer goes here in Phase 2.
-        return Err(Error::InsufficientFunds);
-    }
+    // Phase 2 goes here: decode the sign of `public_amount`, then
+    // token.transfer(user -> contract, amount) on deposit (with require_auth) or
+    // token.transfer(contract -> recipient, amount) on withdraw.
     Ok(())
 }
 

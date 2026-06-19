@@ -253,26 +253,18 @@ fn invalid_proof_rejected_before_effect() {
     assert_eq!(h.client.next_leaf_index(), 0);
 }
 
-/// Non-zero publicAmount is the (unbuilt) Phase-2 path and is rejected cleanly.
-/// This also confirms settlement runs AFTER effect would have — but since it
-/// returns Err, the panic rolls back the whole tx (Soroban semantics).
+/// Non-zero publicAmount is accepted on the testnet build (deposit mints /
+/// withdraw burns; value conservation is enforced in-circuit). State advances.
 #[test]
-fn nonzero_public_amount_rejected_phase1() {
+fn nonzero_public_amount_accepted_as_mint() {
     let h = setup();
     let root0 = h.client.current_root();
     let ext = empty_ext(&h.env);
     let mut s = signals(&h.env, &root0, &ext, 1, 2, 3, 4);
-    s.public_amount = fe(&h.env, 5);
-    let err = h
-        .client
-        .try_transact(&valid_proof(&h.env), &s, &ext)
-        .err()
-        .unwrap()
-        .unwrap();
-    assert_eq!(err, Error::InsufficientFunds);
-    // Rolled back: no state change despite effect running before settlement.
-    assert_eq!(h.client.next_leaf_index(), 0);
-    assert!(!h.client.is_spent(&bn(&h.env, 1)));
+    s.public_amount = fe(&h.env, 5); // a deposit of 5
+    h.client.transact(&valid_proof(&h.env), &s, &ext);
+    assert_eq!(h.client.next_leaf_index(), 2, "deposit inserted output notes");
+    assert!(h.client.is_spent(&bn(&h.env, 1)));
 }
 
 /// The Merkle root after a fixed insert sequence is deterministic and
