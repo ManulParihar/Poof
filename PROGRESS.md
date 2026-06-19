@@ -69,5 +69,5 @@ browser (Playwright: clicks, typing, screenshots).
 | U0 | Scaffold + crypto GATE (TS poseidon==pinned, extDataHash==on-chain) | me | ✅ |
 | U1 | Design system + pages (built by me; agents hit session limit) | me | ✅ |
 | U2 | Integration lib (witness/prover-worker/proof/chain/scan/store) | me | ✅ |
-| U3 | Browser E2E (Playwright): create→fund→deposit→confirm PASSES | me | ✅ |
+| U3 | Browser E2E PASSES: create→fund→deposit(100)→**private send(40)** — real in-browser proofs + on-chain | me | ✅ |
 | U4 | Real on-chain deposit from the browser: tx cd221ebe… · stellar-sdk 16 (proto-23 meta) | me | ✅ |

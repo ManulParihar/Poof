@@ -34,6 +34,11 @@ export class ClientMerkleTree {
     for (const l of leaves) this.insert(l);
   }
 
+  /** index of a leaf value (its commitment), or -1 if absent. */
+  indexOf(leaf: bigint): number {
+    return this.leaves.findIndex((l) => l === leaf);
+  }
+
   zero(level: number): bigint {
     return this.zeros[level];
   }

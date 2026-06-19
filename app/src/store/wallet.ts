@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import {
-  initCrypto, deriveKeys, fieldToBytes, fromHex, toHex, type Keys, type Note,
+  initCrypto, deriveKeys, fieldToBytes, fromHex, toHex, commitment, type Keys, type Note,
 } from "../lib/crypto";
 import { ClientMerkleTree } from "../lib/merkleTree";
 import { buildDeposit, buildTransfer, buildWithdraw, type WitnessBundle } from "../lib/witness";
@@ -218,11 +218,9 @@ export const useWallet = create<Internal>()(
           return runFlow("deposit", amount, bundle, (res) => {
             // output 0 = the funded note at leafIndices[0]
             const note: Note = { amount, pubkey: keys.publicKey, blinding: bundle.outputs[0].note.blinding };
-            set((s) => {
-              const notes = [...s.notes, { note, leafIndex: res.leafIndices[0], spent: false, createdAt: now() }];
-              T().insertMany([0n, 0n]); // keep tree length in step (resync corrects values)
-              return { notes };
-            });
+            set((s) => ({
+              notes: [...s.notes, { note, leafIndex: res.leafIndices[0], spent: false, createdAt: now() }],
+            }));
           });
         },
 
@@ -236,9 +234,13 @@ export const useWallet = create<Internal>()(
           const keys = ensureKeys(seedHex);
           const input = get().notes.find((n) => !n.spent && n.note.amount >= amount && n.leafIndex != null);
           if (!input || input.leafIndex == null) { set({ busy: false }); throw new Error("no note covers that amount"); }
+          // authoritative leaf index from the freshly-synced tree (the stored one
+          // can be stale if other transacts landed in between).
+          const idx = T().indexOf(commitment(input.note));
+          if (idx < 0) { set({ busy: false }); throw new Error("note not found on-chain — sync/scan first"); }
           const bundle = buildTransfer({
             tree: T(), sk: keys.spendKey, selfPub: keys.publicKey, selfEncPub: keys.encPublic,
-            inputNote: input.note, inputLeafIndex: input.leafIndex,
+            inputNote: input.note, inputLeafIndex: idx,
             amount, recipientPub: BigInt(toPubkey), recipientEncPub: fromHex(toEncPub),
           });
           const change = input.note.amount - amount;
@@ -264,9 +266,11 @@ export const useWallet = create<Internal>()(
           const keys = ensureKeys(seedHex);
           const input = get().notes.find((n) => !n.spent && n.note.amount >= amount && n.leafIndex != null);
           if (!input || input.leafIndex == null) { set({ busy: false }); throw new Error("no note covers that amount"); }
+          const idx = T().indexOf(commitment(input.note));
+          if (idx < 0) { set({ busy: false }); throw new Error("note not found on-chain — sync/scan first"); }
           const bundle = buildWithdraw({
             tree: T(), sk: keys.spendKey, selfPub: keys.publicKey, selfEncPub: keys.encPublic,
-            inputNote: input.note, inputLeafIndex: input.leafIndex, amount,
+            inputNote: input.note, inputLeafIndex: idx, amount,
           });
           const change = input.note.amount - amount;
           return runFlow("withdraw", amount, bundle, (res) => {

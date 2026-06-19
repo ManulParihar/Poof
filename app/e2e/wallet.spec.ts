@@ -47,7 +47,23 @@ test("create → fund → deposit (real proof + on-chain)", async ({ page }) => 
   await page.goto("/");
   await expect(page.getByTestId("balance")).toContainText("100", { timeout: 30_000 });
   await page.screenshot({ path: `${SHOTS}/07-balance-100.png`, fullPage: true });
-
   console.log("DEPOSIT_TX:", hash.replace(/\s+/g, " ").trim());
+
+  // ── private transfer (real Merkle-membership proof) — send 40 to self ──
+  await page.goto("/send");
+  await page.getByText("Send to myself (test)").click();
+  await page.getByTestId("send-amount").fill("40");
+  await page.getByTestId("send-submit").click();
+  await expect(page.getByTestId("tx-progress")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("tx-status")).toContainText("confirmed", { timeout: 150_000 });
+  const sendHash = (await page.getByTestId("tx-hash").textContent()) || "";
+  await page.screenshot({ path: `${SHOTS}/08-send-confirmed.png`, fullPage: true });
+
+  // input note (100) is spent, change note (60) remains → balance 60
+  await page.goto("/");
+  await expect(page.getByTestId("balance")).toContainText("60", { timeout: 30_000 });
+  await page.screenshot({ path: `${SHOTS}/09-balance-60.png`, fullPage: true });
+  console.log("TRANSFER_TX:", sendHash.replace(/\s+/g, " ").trim());
+
   expect(errors.filter((e) => !/favicon|Download the React/i.test(e))).toEqual([]);
 });

@@ -171,34 +171,41 @@ export interface CommitmentEvent {
 export async function getNewCommitments(startLedger?: number): Promise<CommitmentEvent[]> {
   const s = server();
   const latest = await s.getLatestLedger();
-  const from = startLedger ?? Math.max(latest.sequence - 17280, 1); // ~last 24h window
+  // The RPC scans only a bounded ledger window per getEvents call, so a start far
+  // in the past yields an empty first page. Start within ~6h of head (well inside
+  // RPC retention); the durable indexer (PLANE 4b) is the answer for full history.
+  const from = startLedger ?? Math.max(latest.sequence - 6000, 1);
+  const LIMIT = 200;
   const out: CommitmentEvent[] = [];
   let cursor: string | undefined;
-  for (let page = 0; page < 20; page++) {
+  for (let page = 0; page < 30; page++) {
     const resp: any = await s.getEvents({
-      startLedger: cursor ? undefined : from,
-      cursor,
+      ...(cursor ? { cursor } : { startLedger: from }),
       filters: [{ type: "contract", contractIds: [CONTRACT_ID] }],
-      limit: 200,
+      limit: LIMIT,
     } as any);
-    for (const ev of resp.events ?? []) {
+    const evs = resp.events ?? [];
+    for (const ev of evs) {
       const topics = ev.topic.map((t: xdr.ScVal) => scValToNative(t));
       if (topics[0] !== "NewCommit") continue;
       const data = scValToNative(ev.value);
       // tuple (commitment, leaf_index, ciphertext, view_tag)
       out.push({
-        commitment: data[0] as Uint8Array,
+        commitment: Uint8Array.from(data[0] as Uint8Array),
         leafIndex: Number(data[1]),
-        ciphertext: data[2] as Uint8Array,
+        ciphertext: Uint8Array.from(data[2] as Uint8Array),
         viewTag: Number(data[3]),
         ledger: Number(ev.ledger),
       });
     }
-    if (!resp.cursor || (resp.events ?? []).length === 0) break;
+    // last page reached when fewer than LIMIT events come back
+    if (evs.length < LIMIT || !resp.cursor) break;
     cursor = resp.cursor;
   }
-  out.sort((a, b) => a.leafIndex - b.leafIndex);
-  return out;
+  // dedupe by leaf index (idempotent) and order
+  const byIdx = new Map<number, CommitmentEvent>();
+  for (const e of out) byIdx.set(e.leafIndex, e);
+  return [...byIdx.values()].sort((a, b) => a.leafIndex - b.leafIndex);
 }
 
 export { toHex, fromHex, Address };
