@@ -1,0 +1,14 @@
+{
+  "testnet": {
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "rpc_url": "https://soroban-testnet.stellar.org",
+    "contract_id": "CD6WNAXYDSDNTKE5MX6FENGR6VO6GZY55Q2MNMA664D2NXKCF6HMR5X4",
+    "deployer": "GAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJLM",
+    "deploy_tx": "3f922b4174edae73e2be6c0603027ca76cb73867335f4bbe9e8c24663466ac4b",
+    "init_tx": "17ed00ca48f939354b5b97d6f9f0c5541b14a3fcf7a9a0cc627131a562ba1a08",
+    "config": { "levels": 20, "root_history_size": 64 },
+    "genesis_root": "2d3c07bea6883428edd2d80d07cec4b911309fed96743822d6aadea06313a951",
+    "wasm_bytes": 63754,
+    "explorer": "https://stellar.expert/explorer/testnet/contract/CD6WNAXYDSDNTKE5MX6FENGR6VO6GZY55Q2MNMA664D2NXKCF6HMR5X4"
+  }
+}

@@ -143,6 +143,7 @@ mod mock {
 /// load-bearing at the contract boundary — flip one public signal and it fails.
 #[cfg(test)]
 mod real_proof_test {
+    extern crate std;
     use super::*;
     use crate::sample_proof::{PROOF_A, PROOF_B, PROOF_C, PUBLIC_SIGNALS};
     use crate::vk::VK;
@@ -174,6 +175,23 @@ mod real_proof_test {
             verify_real(&env, &VK, &proof, &signals),
             Ok(()),
             "a genuine circuit proof must verify through the real BN254 host path"
+        );
+    }
+
+    /// The NFR (CLAUDE.md Part 10): on-chain Groth16 verify must fit Soroban's
+    /// 100M-instruction budget. Measure the real BN254 host-function verify cost
+    /// and assert headroom. Printed with `--nocapture`.
+    #[test]
+    fn real_verify_fits_instruction_budget() {
+        let env = Env::default();
+        let (proof, signals) = fixture(&env);
+        let before = env.cost_estimate().budget().cpu_instruction_cost();
+        let _ = verify_real(&env, &VK, &proof, &signals);
+        let used = env.cost_estimate().budget().cpu_instruction_cost() - before;
+        std::eprintln!("REAL BN254 Groth16 verify CPU instructions: {used}");
+        assert!(
+            used < 100_000_000,
+            "verify cost {used} exceeds Soroban's 100M instruction budget"
         );
     }
 
