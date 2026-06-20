@@ -167,7 +167,7 @@ Design (decided):
 | M1 | **GATE**: crypto Poseidon t=5 + PARAMS_T5 + hash4 + width-4 cross-impl vector | ✅ | poseidon.rs state [Fr;5]; PARAMS_T5 from light-poseidon 0.4 via committed gen example; Poseidon(1,2,3,4)=18821383…; 6/6 tests, wasm32 no_std builds, clippy clean |
 | M2 | crypto: currency_id in Note, commitment -> hash4, re-pin vectors | ✅ | commitment=Poseidon(amount,currency_id,pk,blinding); pinned (cur=1): cm=1368167…, nf=5670915…; INTERFACES §0 updated |
 | M3 | app crypto.ts mirror (hash4 + 76-byte plaintext), assert same vector | ✅ | crypto.test.ts 7/7; Poseidon(1,2,3,4) + note vectors match Rust; plaintext 76B round-trips with currencyId. witness.ts + rest of app land in M8 |
-| M4 | circuit: Poseidon(4) commitments + currencyId [7], regen r1cs, fixture cross-check | ⏳ | three-way gate closed at width 4 |
+| M4 | circuit: Poseidon(4) commitments + currencyId [7], fixture cross-check | ✅ | currencyId is public signal [7]; 4 commitments use Poseidon(4); 4/4 circom tests; note pipeline matches pinned width-4 vectors. zkey/vkey regen in M5 |
 | M5 | regenerate zkey/vkey -> vk.rs (NUM_PUBLIC=8, 9 IC points) | ⏳ | confirm export not hardcoded to 7 |
 | M6 | contract: registry, admin-only register_token, currency validation + scoped settlement, errors, tests | ⏳ | UnknownCurrency=9, Unauthorized=10 |
 | M7 | Rust SDK: thread currency_id through note/encrypt/tx/scan; e2e_prove | ⏳ | plaintext 72->76 |
