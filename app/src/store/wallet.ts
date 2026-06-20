@@ -398,7 +398,7 @@ export const useWallet = create<Internal>()(
           await get().syncChain();
           const keys = ensureKeys(seedHex);
           const input = get().notes.find(
-            (n) => !n.spent && n.note.currencyId === currencyId && n.note.amount >= amount && n.leafIndex != null
+            (n) => !n.spent && n.note.pubkey === keys.publicKey && n.note.currencyId === currencyId && n.note.amount >= amount && n.leafIndex != null
           );
           if (!input || input.leafIndex == null) { set({ busy: false }); throw new Error("no note covers that amount"); }
           // authoritative leaf index from the freshly-synced tree (the stored one
@@ -434,7 +434,7 @@ export const useWallet = create<Internal>()(
           await get().syncChain();
           const keys = ensureKeys(seedHex);
           const input = get().notes.find(
-            (n) => !n.spent && n.note.currencyId === currencyId && n.note.amount >= amount && n.leafIndex != null
+            (n) => !n.spent && n.note.pubkey === keys.publicKey && n.note.currencyId === currencyId && n.note.amount >= amount && n.leafIndex != null
           );
           if (!input || input.leafIndex == null) { set({ busy: false }); throw new Error("no note covers that amount"); }
           const idx = T().indexOf(commitment(input.note));

@@ -121,6 +121,31 @@ function dummyInput(sk: bigint, pathIndex: number): InputSpec {
   return { amount: 0n, sk, blinding: rand(), pathIndex, pathElements: Array(TREE_LEVELS).fill(0n) };
 }
 
+/**
+ * A note is spendable only by the key whose public key it commits to. The
+ * circuit recomputes the input commitment with `pk = Poseidon(sk)` and checks
+ * Merkle membership; if `note.pubkey != Poseidon(sk)` the leaf won't match and
+ * the proof fails deep inside the circuit (ForceEqualIfEnabled). Catch it here
+ * with an actionable message instead — this means the connected identity isn't
+ * the one that owns the note (e.g. a different wallet account than the depositor).
+ */
+function assertSpendable(sk: bigint, inputNote: Note): void {
+  const owner = hash1(sk);
+  if (owner !== inputNote.pubkey) {
+    // eslint-disable-next-line no-console
+    console.warn("[veil] note not spendable by this identity", {
+      noteOwnerPubkey: inputNote.pubkey.toString(),
+      thisIdentityPubkey: owner.toString(),
+      currencyId: inputNote.currencyId,
+    });
+    throw new Error(
+      "This note belongs to a different account and can't be spent by the connected " +
+        "identity. Reconnect the exact wallet account that deposited it (the shielded " +
+        "identity is derived from that account's signature)."
+    );
+  }
+}
+
 /** Deposit: pull `amount` from `settlementAddress` into a self-note.
  *  publicAmount = +amount, dummy inputs. */
 export function buildDeposit(params: {
@@ -148,6 +173,7 @@ export function buildTransfer(params: {
   settlementAddress: string;
 }): WitnessBundle {
   const { tree, sk, selfPub, selfEncPub, inputNote, inputLeafIndex, amount, recipientPub, recipientEncPub, settlementAddress } = params;
+  assertSpendable(sk, inputNote);
   const path = tree.path(inputLeafIndex);
   if (!path) throw new Error("input note not in tree");
   const change = inputNote.amount - amount;
@@ -177,6 +203,7 @@ export function buildWithdraw(params: {
   settlementAddress: string;
 }): WitnessBundle {
   const { tree, sk, selfPub, selfEncPub, inputNote, inputLeafIndex, amount, settlementAddress } = params;
+  assertSpendable(sk, inputNote);
   const path = tree.path(inputLeafIndex);
   if (!path) throw new Error("input note not in tree");
   const change = inputNote.amount - amount;
