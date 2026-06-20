@@ -3,7 +3,7 @@
 // Stellar account (separate from the Veil identity) that signs/pays.
 import {
   rpc, Contract, TransactionBuilder, Keypair, Account, xdr, nativeToScVal,
-  scValToNative, Address, authorizeEntry,
+  scValToNative, Address, authorizeEntry, Operation, Asset,
 } from "@stellar/stellar-sdk";
 import { CONTRACT_ID, NETWORK_PASSPHRASE, RPC_URL, FRIENDBOT } from "./types";
 import type { ProofBytes } from "./proof";
@@ -71,6 +71,65 @@ export function generateKeypair() {
 export async function friendbotFund(publicKey: string): Promise<void> {
   const res = await fetch(`${FRIENDBOT}?addr=${encodeURIComponent(publicKey)}`);
   if (!res.ok && res.status !== 400) throw new Error(`friendbot failed: ${res.status}`);
+}
+
+/** Classic-asset balance of `publicKey` for `code:issuer`, as a display string. */
+export async function getAssetBalance(publicKey: string, code: string, issuer: string): Promise<string> {
+  try {
+    const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${publicKey}`);
+    if (!res.ok) return "0";
+    const data = await res.json();
+    const bal = (data.balances ?? []).find(
+      (b: any) => b.asset_code === code && b.asset_issuer === issuer
+    );
+    return bal ? bal.balance : "0";
+  } catch {
+    return "0";
+  }
+}
+
+/**
+ * Drip a custom asset to `feeAccount`: establishes the trustline (signed by the
+ * fee account) and pays `amount` from the faucet distributor (signed by the
+ * faucet key), in one atomic classic transaction. Returns the tx hash. The
+ * distributor is the tx source and pays the fee.
+ */
+export async function faucetDrip(opts: {
+  feeSecret: string;
+  faucetSecret: string;
+  assetCode: string;
+  issuer: string;
+  amount: string;
+}): Promise<string> {
+  const s = server();
+  const feeKp = Keypair.fromSecret(opts.feeSecret);
+  const faucetKp = Keypair.fromSecret(opts.faucetSecret);
+  const asset = new Asset(opts.assetCode, opts.issuer);
+  const source = await s.getAccount(faucetKp.publicKey());
+
+  const tx = new TransactionBuilder(source, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
+    // trustline change is authorised by the fee account (it owns the trustline);
+    // re-running with the default max limit is harmless if it already exists.
+    .addOperation(Operation.changeTrust({ asset, source: feeKp.publicKey() }))
+    .addOperation(Operation.payment({
+      destination: feeKp.publicKey(),
+      asset,
+      amount: opts.amount,
+      source: faucetKp.publicKey(),
+    }))
+    .setTimeout(120)
+    .build();
+  tx.sign(faucetKp, feeKp);
+
+  const sent = await s.sendTransaction(tx);
+  if (sent.status === "ERROR") throw new Error(`faucet submit error: ${JSON.stringify(sent.errorResult)}`);
+  let final = await s.getTransaction(sent.hash);
+  for (let i = 0; i < 30 && final.status === "NOT_FOUND"; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    final = await s.getTransaction(sent.hash);
+  }
+  if (final.status !== "SUCCESS") throw new Error(`faucet failed on-chain: ${final.status}`);
+  return sent.hash;
 }
 
 export async function getXlmBalance(publicKey: string): Promise<string> {

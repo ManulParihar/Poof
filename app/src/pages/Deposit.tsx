@@ -4,17 +4,36 @@ import { AmountInput, Spinner, useToast } from "../components/ui";
 import CurrencySelect from "../components/CurrencySelect";
 import TxProgress from "../components/TxProgress";
 import { currencyById, toBaseUnits, DEFAULT_CURRENCY_ID } from "../lib/currencies";
+import { faucetFor, faucetSecret } from "../lib/faucet";
 
 export default function Deposit() {
-  const { deposit, txs, feeAccount } = useWallet();
+  const { deposit, faucetDrip, txs, feeAccount } = useWallet();
   const [amount, setAmount] = useState("");
   const [currencyId, setCurrencyId] = useState(DEFAULT_CURRENCY_ID);
   const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [faucetBusy, setFaucetBusy] = useState(false);
   const toast = useToast();
   const currency = currencyById(currencyId);
+  const faucet = faucetFor(currencyId);
   // txs is newest-first; the latest deposit is the active one once we've started.
   const tx = started ? txs.find((t) => t.kind === "deposit") : undefined;
+
+  const drip = async () => {
+    if (!faucetSecret()) {
+      toast.push("Faucet not configured (set VITE_VUSD_FAUCET_SECRET)", "err");
+      return;
+    }
+    setFaucetBusy(true);
+    try {
+      await faucetDrip(currencyId);
+      toast.push(`Dripped ${faucet!.dripAmount} ${currency.symbol} to your fee account`, "ok");
+    } catch (e: any) {
+      toast.push(e.message ?? "faucet failed", "err");
+    } finally {
+      setFaucetBusy(false);
+    }
+  };
 
   const submit = async () => {
     const a = toBaseUnits(amount, currency.decimals);
@@ -44,6 +63,16 @@ export default function Deposit() {
         <div>
           <div className="label">Asset</div>
           <CurrencySelect value={currencyId} onChange={setCurrencyId} testid="deposit-currency" />
+          {faucet && (
+            <button
+              data-testid="faucet-vusd"
+              onClick={drip}
+              disabled={faucetBusy}
+              className="btn-ghost mt-2 w-full py-2 text-sm"
+            >
+              {faucetBusy ? <><Spinner /> Dripping…</> : `Faucet: get ${faucet.dripAmount} ${currency.symbol}`}
+            </button>
+          )}
         </div>
         <div>
           <div className="label">Amount</div>

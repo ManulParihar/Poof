@@ -122,4 +122,7 @@ export interface WalletState {
   withdraw: (currencyId: number, amount: bigint, toStellar: string) => Promise<TransactResult>;
   /** demo helper: create a self-note via a real on-chain transact (Phase-1 mechanics) */
   selfMintDemo: (currencyId: number, amount: bigint) => Promise<TransactResult>;
+  /** testnet faucet: drip a custom asset (e.g. VUSD) to the fee account so it can
+   *  then be deposited. Establishes the trustline if missing. Returns the tx hash. */
+  faucetDrip: (currencyId: number) => Promise<string>;
 }

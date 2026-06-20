@@ -12,6 +12,7 @@ import { prove } from "../lib/prover";
 import { proofToBytes, publicSignalsToBytes } from "../lib/proof";
 import * as chain from "../lib/chain";
 import { scanEvents } from "../lib/scan";
+import { faucetFor, faucetSecret } from "../lib/faucet";
 import {
   type WalletState, type StoredNote, type TxRecord, type FeeAccount, type TransactResult,
   CONTRACT_ID,
@@ -263,6 +264,23 @@ export const useWallet = create<Internal>()(
         },
 
         selfMintDemo: async (currencyId: number, amount: bigint) => get().deposit(currencyId, amount),
+
+        faucetDrip: async (currencyId: number) => {
+          const { _feeSecret, feeAccount } = get();
+          if (!_feeSecret || !feeAccount) throw new Error("wallet not ready");
+          const cfg = faucetFor(currencyId);
+          if (!cfg) throw new Error("no faucet for this asset");
+          const secret = faucetSecret();
+          if (!secret) throw new Error("faucet not configured (set VITE_VUSD_FAUCET_SECRET in app/.env.local)");
+          if (!feeAccount.funded) throw new Error("fund your fee account first (it pays the trustline reserve)");
+          return chain.faucetDrip({
+            feeSecret: _feeSecret,
+            faucetSecret: secret,
+            assetCode: cfg.assetCode,
+            issuer: cfg.issuer,
+            amount: cfg.dripAmount,
+          });
+        },
 
         send: async (currencyId: number, toPubkey: string, toEncPub: string, amount: bigint) => {
           const { seedHex } = get();
