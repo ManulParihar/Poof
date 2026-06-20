@@ -137,3 +137,39 @@ contract's XLM custody balance reconciling.
   `d4521703…`)→**withdraw 0.4 XLM** to a Stellar address (`e8b48130…`); shielded balance 2→1.6.
 - On-chain pool custody reconciles: deposits − withdrawals (verified via SAC balance).
 - Auth: contract `settlement_address.require_auth()` (root-tied) + client `authorizeEntry` signing.
+
+---
+
+# /goal — Phase 3: multi-currency in a single contract (registry-driven)
+
+GOAL: one shielded pool that holds many assets. Each note carries a `currency_id`;
+the contract keeps a registry `currency_id -> SAC Address` and an admin can add new
+tokens by writing to that registry. Hard requirement: adding a token is a pure
+state write — no wasm upgrade, no circuit change, no trusted-setup regeneration
+(the circuit treats `currency_id` as an opaque field element). One currency per
+transaction; cross-currency swaps are out of scope.
+
+Design (decided):
+- commitment = Poseidon(amount, currency_id, pk, blinding) — 4-input Poseidon (add PARAMS_T5).
+- currency_id = u32 registry index. Contract state: `Token(u32) -> Address`, `TokenCount -> u32`.
+- New public signal `currencyId` at index [7]; public-signal count 7 -> 8.
+- Note plaintext gains currency_id (4 bytes): amount(8)||currencyId(4)||pubkey(32)||blinding(32) = 76.
+- Only Admin may `register_token` (`admin.require_auth()` else `Unauthorized`).
+- `transact` rejects `currency_id >= token_count` (`UnknownCurrency`) on every call.
+- Settlement looks up `Token(currency_id)`, never a fixed global token.
+- Breaking change: new commitment formula + signal count + storage layout -> fresh deploy.
+
+## Status legend: ✅ done & verified · 🟡 in progress · ⏳ queued
+
+| # | Plane / task | Status | Notes |
+|---|---|---|---|
+| M0 | Seed this tracker section | 🟡 | this entry |
+| M1 | **GATE**: crypto Poseidon t=5 + PARAMS_T5 + hash4 + width-4 cross-impl vector | ⏳ | poseidon.rs state [Fr;5]; constants from light-poseidon 0.4; `cargo test -p veil-crypto` green before anything else |
+| M2 | crypto: currency_id in Note, commitment -> hash4, re-pin vectors | ⏳ | INTERFACES §0 + cross_impl.rs |
+| M3 | app crypto.ts mirror (hash4 + 76-byte plaintext), assert same vector | ⏳ | three-way gate, JS side |
+| M4 | circuit: Poseidon(4) commitments + currencyId [7], regen r1cs, fixture cross-check | ⏳ | three-way gate closed at width 4 |
+| M5 | regenerate zkey/vkey -> vk.rs (NUM_PUBLIC=8, 9 IC points) | ⏳ | confirm export not hardcoded to 7 |
+| M6 | contract: registry, admin-only register_token, currency validation + scoped settlement, errors, tests | ⏳ | UnknownCurrency=9, Unauthorized=10 |
+| M7 | Rust SDK: thread currency_id through note/encrypt/tx/scan; e2e_prove | ⏳ | plaintext 72->76 |
+| M8 | app: currency selector, per-currency balances, per-token decimals; optional indexer column | ⏳ | read decimals/symbol via TokenClient |
+| M9 | docs + fresh testnet deploy; register a 2nd token to prove no vkey change | ⏳ | addresses.json currencies map + history |
