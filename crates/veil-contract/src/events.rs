@@ -40,7 +40,7 @@ pub fn transact(env: &Env, root: &BytesN<32>) {
     env.events().publish(topics, (root.clone(),));
 }
 
-/// `TokenReg(currency_id, token)` — emitted when the admin registers a new asset.
+/// `TokenReg(currency_id, token)` emitted when the admin registers a new asset.
 pub fn token_registered(env: &Env, currency_id: u32, token: &Address) {
     let topics = (symbol_short!("TokenReg"),);
     env.events().publish(topics, (currency_id, token.clone()));

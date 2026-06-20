@@ -115,7 +115,7 @@ The pool holds many assets under one contract. State:
 
 `register_token(token: Address) -> u32` is admin-only (`admin.require_auth()`,
 else `Error::Unauthorized = 10`); it assigns the next id and increments the
-count. Adding a currency is a pure state write — no contract upgrade, no new
+count. Adding a currency is a pure state write: no contract upgrade, no new
 circuit or verifying key (the circuit treats `currencyId` as an opaque field
 element). Every `transact` rejects an unregistered currency with
 `Error::UnknownCurrency = 9`, transfers included, so no note can be minted in a

@@ -56,7 +56,7 @@ impl VeilContract {
     }
 
     /// Register a new asset (SAC `Address`) and return its `currency_id`. Admin
-    /// only: this is the whole point of the registry — new tokens are a state
+    /// only: this is the whole point of the registry, new tokens are a state
     /// write, never a contract upgrade or a new vkey. Returns the assigned id.
     pub fn register_token(env: Env, token: Address) -> Result<u32, Error> {
         if !storage::is_initialized(&env) {

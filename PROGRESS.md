@@ -140,17 +140,17 @@ contract's XLM custody balance reconciling.
 
 ---
 
-# /goal — Phase 3: multi-currency in a single contract (registry-driven)
+# /goal - Phase 3: multi-currency in a single contract (registry-driven)
 
 GOAL: one shielded pool that holds many assets. Each note carries a `currency_id`;
 the contract keeps a registry `currency_id -> SAC Address` and an admin can add new
 tokens by writing to that registry. Hard requirement: adding a token is a pure
-state write — no wasm upgrade, no circuit change, no trusted-setup regeneration
+state write: no wasm upgrade, no circuit change, no trusted-setup regeneration
 (the circuit treats `currency_id` as an opaque field element). One currency per
 transaction; cross-currency swaps are out of scope.
 
 Design (decided):
-- commitment = Poseidon(amount, currency_id, pk, blinding) — 4-input Poseidon (add PARAMS_T5).
+- commitment = Poseidon(amount, currency_id, pk, blinding), a 4-input Poseidon (add PARAMS_T5).
 - currency_id = u32 registry index. Contract state: `Token(u32) -> Address`, `TokenCount -> u32`.
 - New public signal `currencyId` at index [7]; public-signal count 7 -> 8.
 - Note plaintext gains currency_id (4 bytes): amount(8)||currencyId(4)||pubkey(32)||blinding(32) = 76.
