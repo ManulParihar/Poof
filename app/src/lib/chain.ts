@@ -3,12 +3,13 @@
 // Stellar account (separate from the Veil identity) that signs/pays.
 import {
   rpc, Contract, TransactionBuilder, Keypair, Account, xdr, nativeToScVal,
-  scValToNative, Address, authorizeEntry, Operation, Asset,
+  scValToNative, Address, Operation, Asset,
 } from "@stellar/stellar-sdk";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { CONTRACT_ID, NETWORK_PASSPHRASE, RPC_URL, FRIENDBOT } from "./types";
 import type { ProofBytes } from "./proof";
+import type { Signer } from "./signer";
 import { toHex, fromHex } from "./crypto";
 
 const server = () => new rpc.Server(RPC_URL, { allowHttp: false });
@@ -99,39 +100,43 @@ export async function getAssetBalance(publicKey: string, code: string, issuer: s
 }
 
 /**
- * Drip a custom asset to `feeAccount`: establishes the trustline (signed by the
- * fee account) and pays `amount` from the faucet distributor (signed by the
- * faucet key), in one atomic classic transaction. Returns the tx hash. The
- * distributor is the tx source and pays the fee.
+ * Drip a custom asset to the `recipient` account: establishes the trustline
+ * (authorised by the recipient, who owns it) and pays `amount` from the faucet
+ * distributor (signed by the faucet key), in one atomic classic transaction.
+ * The recipient is whichever account is active — a local seed identity or a
+ * connected external wallet — so it co-signs via its Signer. Returns the tx
+ * hash. The distributor is the tx source and pays the network fee.
  */
 export async function faucetDrip(opts: {
-  feeSecret: string;
+  recipient: Signer;
   faucetSecret: string;
   assetCode: string;
   issuer: string;
   amount: string;
 }): Promise<string> {
   const s = server();
-  const feeKp = Keypair.fromSecret(opts.feeSecret);
   const faucetKp = Keypair.fromSecret(opts.faucetSecret);
   const asset = new Asset(opts.assetCode, opts.issuer);
   const source = await s.getAccount(faucetKp.publicKey());
 
   const tx = new TransactionBuilder(source, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
-    // trustline change is authorised by the fee account (it owns the trustline);
+    // trustline change is authorised by the recipient (it owns the trustline);
     // re-running with the default max limit is harmless if it already exists.
-    .addOperation(Operation.changeTrust({ asset, source: feeKp.publicKey() }))
+    .addOperation(Operation.changeTrust({ asset, source: opts.recipient.publicKey }))
     .addOperation(Operation.payment({
-      destination: feeKp.publicKey(),
+      destination: opts.recipient.publicKey,
       asset,
       amount: opts.amount,
       source: faucetKp.publicKey(),
     }))
     .setTimeout(120)
     .build();
-  tx.sign(faucetKp, feeKp);
+  // The recipient signs its own changeTrust first; the distributor then adds its
+  // signature for the source/payment.
+  const co = await opts.recipient.signTransaction(tx);
+  co.sign(faucetKp);
 
-  const sent = await s.sendTransaction(tx);
+  const sent = await s.sendTransaction(co);
   if (sent.status === "ERROR") throw new Error(`faucet submit error: ${JSON.stringify(sent.errorResult)}`);
   let final = await s.getTransaction(sent.hash);
   for (let i = 0; i < 30 && final.status === "NOT_FOUND"; i++) {
@@ -192,15 +197,14 @@ export interface SubmitResult {
 }
 
 export async function submitTransact(
-  feeSecret: string,
+  signer: Signer,
   proof: ProofBytes,
   publicSignals: Uint8Array[],
   ext: ExtDataWire
 ): Promise<SubmitResult> {
   const s = server();
-  const kp = Keypair.fromSecret(feeSecret);
-  const account = await s.getAccount(kp.publicKey());
-  const nextBefore = await getNextLeafIndex(kp.publicKey()).catch(() => 0);
+  const account = await s.getAccount(signer.publicKey);
+  const nextBefore = await getNextLeafIndex(signer.publicKey).catch(() => 0);
 
   const op = new Contract(CONTRACT_ID).call(
     "transact",
@@ -215,7 +219,7 @@ export async function submitTransact(
 
   // Simulate, then EXPLICITLY sign the auth entries the deposit's token.transfer
   // requires (a non-root require_auth on the depositor). The depositor is the
-  // fee-payer, so we sign each address-credential entry with the same keypair.
+  // signer (fee-payer), so we authorize each address-credential entry with it.
   const sim = await s.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(sim)) throw new Error(`simulate: ${sim.error}`);
   const validUntil = (await s.getLatestLedger()).sequence + 100;
@@ -224,15 +228,15 @@ export async function submitTransact(
     const signed = await Promise.all(
       auth.map((e) =>
         e.credentials().switch().name === "sorobanCredentialsAddress"
-          ? authorizeEntry(e, kp, validUntil, NETWORK_PASSPHRASE)
+          ? signer.authorizeEntry(e, validUntil)
           : Promise.resolve(e)
       )
     );
     (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.auth = signed;
   }
   const prepared = rpc.assembleTransaction(tx, sim).build();
-  prepared.sign(kp);
-  const sent = await s.sendTransaction(prepared);
+  const signedPrepared = await signer.signTransaction(prepared);
+  const sent = await s.sendTransaction(signedPrepared);
   if (sent.status === "ERROR") throw new Error(`submit error: ${JSON.stringify(sent.errorResult)}`);
 
   const hash = sent.hash;
@@ -245,7 +249,7 @@ export async function submitTransact(
   if (final.status !== "SUCCESS") {
     throw new Error(`transact failed on-chain: ${final.status}`);
   }
-  const newRoot = await getCurrentRoot(kp.publicKey()).catch(() => "");
+  const newRoot = await getCurrentRoot(signer.publicKey).catch(() => "");
   return { hash, newRoot, leafIndices: [nextBefore, nextBefore + 1] };
 }
 

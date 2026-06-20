@@ -2,6 +2,7 @@
 // (lib/, store/) and the presentation layer (pages/, components/).
 
 import type { Note } from "./crypto";
+import type { Signer } from "./signer";
 
 export const CONTRACT_ID = "CAJDD2WW3CCD37AO3UTRV56WZOVXOUDVBLB3UVNNVGZYBRHA6MRTVNX4";
 export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -91,6 +92,12 @@ export interface WalletState {
   address: VeilAddress | null;
   feeAccount: FeeAccount | null;
 
+  // signer: "local" = seed-derived in-browser Keypair; "wallet" = connected
+  // external wallet via Stellar Wallets Kit.
+  signerKind: "local" | "wallet";
+  connectedWalletId: string | null; // kit wallet id when signerKind === "wallet"
+  connectedAddress: string | null;  // connected G-address when signerKind === "wallet"
+
   // data
   notes: StoredNote[];
   balanceShielded: bigint; // sum of unspent note amounts (all currencies, base units)
@@ -108,7 +115,16 @@ export interface WalletState {
   // lifecycle
   createIdentity: (seedHex?: string) => Promise<void>;
   importIdentity: (seedHex: string) => Promise<void>;
+  /** Connect an external Stellar wallet (Freighter, xBull, …) as the signer and
+   *  derive a deterministic shielded identity from a wallet signature. */
+  connectWallet: () => Promise<void>;
   reset: () => void;
+
+  // signer accessors
+  /** The active Signer (local Keypair or connected wallet). */
+  getSigner: () => Signer;
+  /** The G-address that pays fees / settles / receives faucet drips. */
+  payerPublicKey: () => string | null;
 
   // accounts
   fundFeeAccount: () => Promise<void>;

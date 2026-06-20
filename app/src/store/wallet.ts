@@ -11,6 +11,9 @@ import { buildDeposit, buildTransfer, buildWithdraw, type WitnessBundle } from "
 import { prove } from "../lib/prover";
 import { proofToBytes, publicSignalsToBytes } from "../lib/proof";
 import * as chain from "../lib/chain";
+import { Keypair } from "@stellar/stellar-sdk";
+import { LocalSigner, WalletKitSigner, walletSeedFromSignature, type Signer } from "../lib/signer";
+import * as walletkit from "../lib/walletkit";
 import { scanEvents } from "../lib/scan";
 import { faucetFor, faucetSecret } from "../lib/faucet";
 import { currencyById, toBaseUnits } from "../lib/currencies";
@@ -78,15 +81,16 @@ export const useWallet = create<Internal>()(
         bundle: WitnessBundle,
         onSuccess: (res: chain.SubmitResult) => void
       ): Promise<TransactResult> => {
-        const { seedHex, _feeSecret } = get();
-        if (!seedHex || !_feeSecret) throw new Error("wallet not ready");
+        const { seedHex } = get();
+        if (!seedHex) throw new Error("wallet not ready");
+        const signer = get().getSigner();
         const txId = pushTx({ kind, currencyId, amount, status: "building", stage: "Assembling witness" });
         try {
           updateTx(txId, { status: "proving", stage: "Generating zero-knowledge proof" });
           const { proof, publicSignals } = await prove(bundle.input);
           updateTx(txId, { status: "submitting", stage: "Submitting to Stellar" });
           const res = await chain.submitTransact(
-            _feeSecret,
+            signer,
             proofToBytes(proof),
             publicSignalsToBytes(publicSignals),
             {
@@ -121,6 +125,9 @@ export const useWallet = create<Internal>()(
         seedHex: null,
         address: null,
         feeAccount: null,
+        signerKind: "local",
+        connectedWalletId: null,
+        connectedAddress: null,
         notes: [],
         balanceShielded: 0n,
         balancesByCurrency: {},
@@ -132,6 +139,22 @@ export const useWallet = create<Internal>()(
         feeBalance: null,
         _feeSecret: null,
 
+        // ── signer accessors ──
+        getSigner: (): Signer => {
+          const { signerKind, connectedAddress, connectedWalletId, _feeSecret } = get();
+          if (signerKind === "wallet") {
+            if (!connectedAddress) throw new Error("wallet not connected");
+            return new WalletKitSigner(connectedAddress, walletkit.canSignAuthEntry(connectedWalletId));
+          }
+          if (!_feeSecret) throw new Error("wallet not ready");
+          return new LocalSigner(Keypair.fromSecret(_feeSecret));
+        },
+
+        payerPublicKey: (): string | null => {
+          const { signerKind, connectedAddress, feeAccount } = get();
+          return signerKind === "wallet" ? connectedAddress : (feeAccount?.publicKey ?? null);
+        },
+
         createIdentity: async (seedHex?: string) => {
           await initCrypto();
           const seed = seedHex ? fromHex(seedHex) : crypto.getRandomValues(new Uint8Array(32));
@@ -142,6 +165,9 @@ export const useWallet = create<Internal>()(
           const kp = chain.feeKeypairFromSeed(seed);
           set({
             initialised: true,
+            signerKind: "local",
+            connectedWalletId: null,
+            connectedAddress: null,
             seedHex: hex,
             address: { pubkey: KEYS.publicKey.toString(), encPub: toHex(KEYS.encPublic) },
             feeAccount: { publicKey: kp.publicKey(), secret: kp.secret(), funded: false },
@@ -160,11 +186,44 @@ export const useWallet = create<Internal>()(
           await get().refreshFeeBalance().catch(() => {});
         },
 
+        connectWallet: async () => {
+          await initCrypto();
+          const { walletId, address } = await walletkit.connect();
+          const signer = new WalletKitSigner(address, walletkit.canSignAuthEntry(walletId));
+          // Derive the shielded identity deterministically from a wallet signature
+          // (ed25519 is deterministic), so reconnecting the same wallet — even on a
+          // new device — restores the same notes. No recovery-seed UI is shown.
+          const seed = await walletSeedFromSignature(signer);
+          const hex = toHex(seed);
+          KEYS = deriveKeys(seed);
+          const funded = parseFloat(await chain.getXlmBalance(address).catch(() => "0")) > 0;
+          set({
+            initialised: true,
+            signerKind: "wallet",
+            connectedWalletId: walletId,
+            connectedAddress: address,
+            seedHex: hex,
+            address: { pubkey: KEYS.publicKey.toString(), encPub: toHex(KEYS.encPublic) },
+            // The connected wallet IS the fee-payer/settlement account. No secret
+            // is held in the browser for it.
+            feeAccount: { publicKey: address, secret: "", funded },
+            _feeSecret: null,
+            notes: [],
+            txs: [],
+            balanceShielded: 0n,
+            balancesByCurrency: {},
+          });
+          // Rediscover this identity's notes from the chain (deterministic seed →
+          // same notes on reconnect).
+          await get().scanForNotes().catch(() => {});
+        },
+
         reset: () => {
           KEYS = null;
           TREE = null;
           set({
             initialised: false, seedHex: null, address: null, feeAccount: null,
+            signerKind: "local", connectedWalletId: null, connectedAddress: null,
             _feeSecret: null, notes: [], balanceShielded: 0n, balancesByCurrency: {},
             currentRoot: null, nextLeafIndex: null, txs: [], feeBalance: null,
           });
@@ -268,8 +327,9 @@ export const useWallet = create<Internal>()(
           set({ busy: true });
           await get().syncChain();
           const keys = ensureKeys(seedHex);
-          // the depositor (whose tokens are pulled) is the fee-payer account
-          const depositor = get().feeAccount!.publicKey;
+          // the depositor (whose tokens are pulled) is the active payer account —
+          // the connected wallet, or the local fee account.
+          const depositor = get().payerPublicKey()!;
           const bundle = buildDeposit({
             root: T().root(), sk: keys.spendKey, selfPub: keys.publicKey,
             selfEncPub: keys.encPublic, amount, currencyId, settlementAddress: depositor,
@@ -286,8 +346,9 @@ export const useWallet = create<Internal>()(
         selfMintDemo: async (currencyId: number, amount: bigint) => get().deposit(currencyId, amount),
 
         faucetDrip: async (currencyId: number) => {
-          const { _feeSecret, feeAccount } = get();
-          if (!_feeSecret || !feeAccount) throw new Error("wallet not ready");
+          const { feeAccount } = get();
+          if (!feeAccount) throw new Error("wallet not ready");
+          const signer = get().getSigner();
           const cfg = faucetFor(currencyId);
           if (!cfg) throw new Error("no faucet for this asset");
           const secret = faucetSecret();
@@ -297,7 +358,7 @@ export const useWallet = create<Internal>()(
           const txId = pushTx({ kind: "faucet", currencyId, amount, status: "submitting", stage: "Dripping tokens" });
           try {
             const hash = await chain.faucetDrip({
-              feeSecret: _feeSecret,
+              recipient: signer,
               faucetSecret: secret,
               assetCode: cfg.assetCode,
               issuer: cfg.issuer,
@@ -329,8 +390,8 @@ export const useWallet = create<Internal>()(
             tree: T(), sk: keys.spendKey, selfPub: keys.publicKey, selfEncPub: keys.encPublic,
             inputNote: input.note, inputLeafIndex: idx,
             amount, recipientPub: BigInt(toPubkey), recipientEncPub: fromHex(toEncPub),
-            // transfer: publicAmount==0, settlement unused on-chain; bind the fee account
-            settlementAddress: get().feeAccount!.publicKey,
+            // transfer: publicAmount==0, settlement unused on-chain; bind the payer
+            settlementAddress: get().payerPublicKey()!,
           });
           const change = input.note.amount - amount;
           return runFlow("transfer", currencyId, amount, bundle, (res) => {
@@ -388,11 +449,18 @@ export const useWallet = create<Internal>()(
         feeAccount: s.feeAccount, _feeSecret: s._feeSecret, notes: s.notes,
         txs: s.txs, balanceShielded: s.balanceShielded,
         balancesByCurrency: s.balancesByCurrency,
+        signerKind: s.signerKind, connectedWalletId: s.connectedWalletId,
+        connectedAddress: s.connectedAddress,
       }) as any,
       onRehydrateStorage: () => async (state) => {
         if (state?.seedHex) {
           await initCrypto();
           KEYS = deriveKeys(fromHex(state.seedHex));
+        }
+        // Re-select the previously connected external wallet so signing works
+        // after a reload (no modal; the wallet's own session governs approval).
+        if (state?.signerKind === "wallet" && state.connectedWalletId) {
+          try { walletkit.restore(state.connectedWalletId); } catch { /* wallet ext not present */ }
         }
       },
     }

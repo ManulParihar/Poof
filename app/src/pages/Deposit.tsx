@@ -7,7 +7,10 @@ import { currencyById, toBaseUnits, DEFAULT_CURRENCY_ID } from "../lib/currencie
 import { faucetFor, faucetSecret } from "../lib/faucet";
 
 export default function Deposit() {
-  const { deposit, faucetDrip, txs, feeAccount } = useWallet();
+  const { deposit, faucetDrip, txs, feeAccount, getSigner } = useWallet();
+  // Deposit pulls tokens via a Soroban require_auth, which needs signAuthEntry.
+  // Some external wallets can't sign auth entries — gate the action for them.
+  const canDeposit = (() => { try { return getSigner().canSignAuthEntry; } catch { return false; } })();
   const [amount, setAmount] = useState("");
   const [currencyId, setCurrencyId] = useState(DEFAULT_CURRENCY_ID);
   const [started, setStarted] = useState(false);
@@ -78,9 +81,21 @@ export default function Deposit() {
           <div className="label">Amount</div>
           <AmountInput value={amount} onChange={setAmount} testid="deposit-amount" />
         </div>
-        <button data-testid="deposit-submit" onClick={submit} disabled={busy} className="btn-primary w-full py-3">
+        <button
+          data-testid="deposit-submit"
+          onClick={submit}
+          disabled={busy || !canDeposit}
+          title={canDeposit ? undefined : "Your connected wallet can't sign Soroban auth entries — use Freighter or xBull to deposit."}
+          className="btn-primary w-full py-3"
+        >
           {busy ? <><Spinner /> Working…</> : "Deposit privately"}
         </button>
+        {!canDeposit && (
+          <p data-testid="deposit-unsupported" className="text-xs text-veil-warn">
+            Your connected wallet can't authorize Soroban deposits. Send, withdraw and
+            the faucet still work — to deposit, connect Freighter or xBull.
+          </p>
+        )}
         <p className="text-xs text-veil-muted">
           Real testnet XLM is custodied by the pool contract. Withdraw any time to a
           Stellar address — the amount and recipient stay private until then.

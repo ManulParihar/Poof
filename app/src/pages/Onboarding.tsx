@@ -6,9 +6,10 @@ import { fromStroops, EXPLORER_ACCOUNT } from "../lib/types";
 
 export default function Onboarding() {
   const {
-    initialised, seedHex, feeAccount, balanceShielded, notes,
-    createIdentity, importIdentity, fundFeeAccount, scanForNotes,
+    initialised, seedHex, feeAccount, balanceShielded, notes, signerKind,
+    createIdentity, importIdentity, connectWallet, fundFeeAccount, scanForNotes,
   } = useWallet();
+  const isWallet = signerKind === "wallet";
   const [mode, setMode] = useState<"intro" | "import">("intro");
   const [recovered, setRecovered] = useState(false);
   const [seedInput, setSeedInput] = useState("");
@@ -20,6 +21,16 @@ export default function Onboarding() {
     setBusy(true);
     setRecovered(false);
     try { await createIdentity(); } catch (e: any) { toast.push(e.message, "err"); } finally { setBusy(false); }
+  };
+  const connect = async () => {
+    setBusy(true);
+    setRecovered(false);
+    try {
+      await connectWallet();
+      toast.push("Wallet connected", "ok");
+    } catch (e: any) {
+      toast.push(e?.message ?? "wallet connection failed", "err");
+    } finally { setBusy(false); }
   };
   const doImport = async () => {
     const hex = seedInput.trim().replace(/^0x/, "");
@@ -55,10 +66,14 @@ export default function Onboarding() {
         <div className="w-full max-w-lg space-y-5 animate-fade-in">
           <div className="text-center">
             <Logo className="h-12 w-12 mx-auto" />
-            <h1 className="text-2xl font-bold mt-3">{recovered ? "Welcome back" : "Back up your identity"}</h1>
+            <h1 className="text-2xl font-bold mt-3">
+              {recovered ? "Welcome back" : isWallet ? "Wallet connected" : "Back up your identity"}
+            </h1>
             <p className="text-veil-muted mt-1">
               {recovered
                 ? "Your identity was restored from your seed. Fund a fee-payer account to start transacting."
+                : isWallet
+                ? "Your shielded identity is derived from your wallet — reconnect any time to restore it. Fund your wallet with testnet XLM to pay network fees."
                 : "This 32-byte seed controls your private notes. Store it safely — it cannot be recovered."}
             </p>
           </div>
@@ -70,18 +85,22 @@ export default function Onboarding() {
               </div>
               <div data-testid="recovered-balance" className="text-3xl font-bold mt-1 tabular-nums">{fromStroops(balanceShielded)} <span className="text-lg text-veil-muted">XLM</span></div>
             </div>
-          ) : (
+          ) : isWallet ? null : (
             <div className="card p-5">
               <div className="label">Your recovery seed</div>
               <SecretReveal value={seedHex} testid="seed-display" />
             </div>
           )}
           <div className="card p-5">
-            <div className="font-medium">Fund your fee-payer account</div>
-            <p className="text-sm text-veil-muted mt-1">A separate Stellar account pays network fees. It is derived from your seed, so recovering your seed restores the same account. Fund it instantly from the testnet friendbot.</p>
+            <div className="font-medium">{isWallet ? "Fund your account" : "Fund your fee-payer account"}</div>
+            <p className="text-sm text-veil-muted mt-1">
+              {isWallet
+                ? "Your connected wallet pays network fees. Fund it instantly with testnet XLM from the friendbot."
+                : "A separate Stellar account pays network fees. It is derived from your seed, so recovering your seed restores the same account. Fund it instantly from the testnet friendbot."}
+            </p>
             {feeAccount && (
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <AddressBadge value={feeAccount.publicKey} label="account" testid="fee-account" />
+                <AddressBadge value={feeAccount.publicKey} label={isWallet ? "wallet" : "account"} testid="fee-account" />
                 <ExplorerLink url={EXPLORER_ACCOUNT + feeAccount.publicKey} testid="fee-account-explorer" />
               </div>
             )}
@@ -112,8 +131,11 @@ export default function Onboarding() {
             <button data-testid="create-btn" onClick={create} disabled={busy} className="btn-primary w-full py-3 text-base">
               {busy ? <Spinner /> : null} Create a new identity
             </button>
+            <button data-testid="connect-wallet-btn" onClick={connect} disabled={busy} className="btn-secondary w-full py-3 text-base">
+              {busy ? <Spinner /> : null} Connect wallet
+            </button>
             <button onClick={() => setMode("import")} className="btn-ghost w-full">I have a seed</button>
-            <p className="text-xs text-veil-muted text-center pt-1">No accounts, no signups. Your keys derive from a seed you control.</p>
+            <p className="text-xs text-veil-muted text-center pt-1">No accounts, no signups. Create an identity, or connect a Stellar wallet (Freighter, xBull, …).</p>
           </div>
         ) : (
           <div className="card p-6 space-y-3">
