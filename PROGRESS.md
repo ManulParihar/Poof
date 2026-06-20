@@ -172,4 +172,12 @@ Design (decided):
 | M6 | contract: registry, admin-only register_token, currency validation + scoped settlement, errors, tests | ✅ | Token(u32)+TokenCount registry; register_token admin-gated (Unauthorized=10); transact rejects unregistered currency (UnknownCurrency=9); settlement uses Token(currency_id); 22/22 mock + 6/6 real-proof tests; wasm builds; clippy clean |
 | M7 | Rust SDK: thread currency_id through note/encrypt/tx/scan; e2e_prove | ✅ | plaintext 72->76 (amount|currencyId|pubkey|blinding); witness + public_signals carry currencyId at [7]; build_transfer takes+filters by currency; 29/29 unit + real snarkjs e2e verifies; clippy clean |
 | M8 | app: currency selector, per-currency balances, per-token decimals | ✅ | currencies.ts registry (id,symbol,decimals,sac); CurrencySelect on Deposit/Send/Withdraw; store actions take currencyId; balancesByCurrency; refreshed circuit wasm/zkey/vkey; signalsScVal carries currency_id; tsc clean; 8/8 app tests (incl real-proof integration). Indexer column deferred (currency is in encrypted plaintext) |
-| M9 | docs + fresh testnet deploy; register a 2nd token to prove no vkey change | ⏳ | addresses.json currencies map + history |
+| M9 | docs + fresh testnet deploy; register a 2nd token to prove no vkey change | ✅ | INTERFACES §0/§3/§4/§5/§5b + CLAUDE.md updated; redeployed `CAJDD2WW…` (init XLM=0), register_token added VUSD=1 on-chain (TokenReg event, token_count=2) with the SAME vkey; addresses.json currencies map + phase2 moved to history; app CONTRACT_ID + currencies updated |
+
+## Phase-3 RESULT ✅ (multi-currency live)
+- Contract `CAJDD2WW3CCD37AO3UTRV56WZOVXOUDVBLB3UVNNVGZYBRHA6MRTVNX4` on testnet.
+- currency 0 = native XLM SAC (`CDLZFC3S…`), currency 1 = VUSD SAC (`CDR3FXAK…`) added via register_token; token_count=2.
+- commitment = Poseidon(amount, currency_id, pk, blinding); currencyId = public signal [7]; NUM_PUBLIC=8, vk IC=9.
+- Adding currency 1 needed only register_token (admin-gated state write): no contract upgrade, no new vkey. Hard requirement met.
+- Tests: veil-crypto 6/6 cross-impl (incl width-4 Poseidon(1,2,3,4)); contract 22 mock + 6 real-proof; sdk 29 + real snarkjs e2e; app 8 (incl real-proof integration); indexer 19. All green; clippy + tsc clean.
+- Note plaintext 76B carries currency; per-currency balances + currency selector in the app.

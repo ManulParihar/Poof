@@ -3,7 +3,7 @@
 
 import type { Note } from "./crypto";
 
-export const CONTRACT_ID = "CDFXWV6K7CKTUYNTEHLJYUQU5WK2DRLMSWB57ASJN5VWB7UNIQPNIGV4";
+export const CONTRACT_ID = "CAJDD2WW3CCD37AO3UTRV56WZOVXOUDVBLB3UVNNVGZYBRHA6MRTVNX4";
 export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 export const RPC_URL = "https://soroban-testnet.stellar.org";
 export const FRIENDBOT = "https://friendbot.stellar.org";

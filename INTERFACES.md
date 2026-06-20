@@ -50,16 +50,21 @@ string, all via `veil-crypto::field`.
 - Root history ring buffer size = **64**.
 
 ## 3. Public signals (circuit output order == contract input order)
-Exactly 7, in this order:
+Exactly 8, in this order (`NUM_PUBLIC = 8`, so the VK `IC` array has 9 points):
 ```
 [0] root
-[1] publicAmount      // 0 for Phase-1 transfer; field-encoded signed for Phase-2
+[1] publicAmount      // 0 for transfer; field-encoded signed for deposit/withdraw
 [2] extDataHash
 [3] inputNullifier[0]
 [4] inputNullifier[1]
 [5] outputCommitment[0]
 [6] outputCommitment[1]
+[7] currencyId        // the asset all notes in this tx use (u32 registry index)
 ```
+`currencyId` is fed into every input and output commitment in-circuit, so all
+four notes in a transaction share one asset. On the wire it is a 32-byte
+big-endian field element (low 4 bytes significant); the contract decodes it to a
+`u32` and requires it to be a registered token (`< token_count`).
 
 ## 4. ExtData and extDataHash
 `extDataHash` binds recipient/relayer/fee/ciphertexts so a relayer cannot
@@ -84,11 +89,38 @@ extDataHash = keccak256( recipient(32) || relayer(32) || fee_be(16) ||
 `keccak256` = the Soroban host `env.crypto().keccak256`. Reduce the 32-byte
 digest mod r with `from_be_bytes_mod_order`.
 
+`currencyId` is intentionally NOT part of `extDataHash`: it is already a verified
+public signal [7], so binding it again would be redundant. Settlement resolves
+the SAC via `Token(currencyId)` from the registry.
+
+### Note plaintext (the AEAD payload carried in each ciphertext)
+76 bytes, big-endian: `amount(8) || currencyId(4) || pubkey(32) || blinding(32)`.
+The wire ciphertext blob is `ephemeral_x25519_pub(32) || aead_ct`, where the AEAD
+ciphertext is `plaintext(76) + Poly1305 tag(16) = 92` bytes. A recipient recovers
+the note's currency on decrypt.
+
 ## 5. Events (contract emits, indexer ingests)
-- Topic `("NewCommitment",)`, data tuple `(commitment: BytesN<32>, leaf_index:
+- Topic `("NewCommit",)`, data tuple `(commitment: BytesN<32>, leaf_index:
   u32, ciphertext: Bytes, view_tag: u32)`.
 - Topic `("Nullifier",)`, data `nullifier: BytesN<32>`.
 - Topic `("Transact",)`, data `(root: BytesN<32>,)` emitted once per call.
+- Topic `("TokenReg",)`, data `(currency_id: u32, token: Address)` emitted when
+  the admin registers a new asset.
+
+## 5b. Token registry (multi-currency)
+The pool holds many assets under one contract. State:
+- `Token(u32) -> Address`: the SAC backing each `currency_id`. Index 0 is the
+  init token (native XLM SAC).
+- `TokenCount -> u32`: number of registered currencies; also the next id.
+
+`register_token(token: Address) -> u32` is admin-only (`admin.require_auth()`,
+else `Error::Unauthorized = 10`); it assigns the next id and increments the
+count. Adding a currency is a pure state write — no contract upgrade, no new
+circuit or verifying key (the circuit treats `currencyId` as an opaque field
+element). Every `transact` rejects an unregistered currency with
+`Error::UnknownCurrency = 9`, transfers included, so no note can be minted in a
+currency that has no backing token. Deposit/withdraw settle `Token(currencyId)`,
+keeping each token's custody isolated.
 
 ## 6. Groth16 verification (contract) — BN254 native host functions
 soroban-sdk 26.1 `soroban_sdk::crypto::bn254::Bn254` provides `pairing_check`,

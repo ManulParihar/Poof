@@ -21,6 +21,12 @@ export const CURRENCIES: Currency[] = [
     decimals: 7,
     sac: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
   },
+  {
+    id: 1,
+    symbol: "VUSD",
+    decimals: 7,
+    sac: "CDR3FXAKYZKDXMF53LZM5LIER7SYRKMA2EXGDBO3KODCCBEBCY5XJS64",
+  },
 ];
 
 export const DEFAULT_CURRENCY_ID = 0;
