@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useWallet } from "../store/wallet";
 import { StatCard, AddressBadge, StatusChip, truncate, Spinner } from "../components/ui";
 import PoofSparkle from "../components/PoofSparkle";
-import PoofLottie from "../components/fx/PoofLottie";
+import AdvancedPoofActivityReport from "../components/ui/AdvancedPoofActivityReport";
 import { EXPLORER_TX } from "../lib/types";
 import { CURRENCIES, currencyById, fromBaseUnits, formatAmount } from "../lib/currencies";
 import { analyzePrivacy } from "../lib/privacyScore";
@@ -140,33 +140,8 @@ export default function Dashboard() {
         );
       })()}
 
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold">Recent activity</h2>
-          <Link to="/app/activity" className="text-sm text-poof-muted hover:text-poof-text">View all</Link>
-        </div>
-        {s.txs.length === 0 ? (
-          <div className="card p-8 text-center text-poof-muted text-sm flex flex-col items-center gap-2">
-            <PoofLottie name="bored" className="h-24 w-24" />
-            <span>Nothing up our sleeve yet. Deposit to mint your first private note.</span>
-          </div>
-        ) : (
-          <div className="card divide-y divide-poof-border">
-            {s.txs.slice(0, 5).map((t) => (
-              <div key={t.id} className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <span className={`h-2 w-2 rounded-full shrink-0 ${t.kind === "deposit" ? "bg-poof-success" : t.kind === "withdraw" ? "bg-poof-gold" : t.kind === "transfer" ? "bg-poof-lavender" : "bg-poof-accent"}`} />
-                  <span className="capitalize font-medium">{t.kind}</span>
-                  <StatusChip status={t.status} />
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="tabular-nums">{formatAmount(t.amount, t.currencyId)}</span>
-                  {t.hash && <a href={EXPLORER_TX + t.hash} target="_blank" rel="noreferrer" className="text-xs text-poof-gold hover:underline">{truncate(t.hash, 6, 4)} ↗</a>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="mt-4">
+        <AdvancedPoofActivityReport />
       </div>
     </div>
   );
