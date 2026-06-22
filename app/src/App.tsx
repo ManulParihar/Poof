@@ -25,7 +25,7 @@ export default function App() {
     <ToastProvider>
       {/* Subtle drifting smoke behind the entire app — the "poof" never settles.
           (Hidden behind the landing's opaque cream canvas at "/".) */}
-      <SmokeBackground className="fixed inset-0 -z-10" smokeColor="#A78BFA" opacity={0.12} />
+      <SmokeBackground className="fixed inset-0 -z-10" smokeColor="#A78BFA" opacity={0.12} speed={0.3} />
       <Routes>
         {/* Public marketing site */}
         <Route path="/" element={<Landing />} />

@@ -58,12 +58,15 @@ interface SmokeBackgroundProps {
   smokeColor?: string;
   /** Overall opacity of the layer. Keep low for a subtle backdrop. */
   opacity?: number;
+  /** Drift speed multiplier. <1 makes the smoke billow more slowly. */
+  speed?: number;
   className?: string;
 }
 
 export function SmokeBackground({
   smokeColor = "#A78BFA",
   opacity = 0.14,
+  speed = 1,
   className = "",
 }: SmokeBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -126,7 +129,7 @@ export function SmokeBackground({
       gl.useProgram(program);
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.uniform2f(uRes, canvas.width, canvas.height);
-      gl.uniform1f(uTime, now * 1e-3);
+      gl.uniform1f(uTime, now * 1e-3 * speed);
       gl.uniform3fv(uColor, color);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       raf = requestAnimationFrame(render);
@@ -141,7 +144,7 @@ export function SmokeBackground({
       gl.deleteShader(fs);
       gl.deleteBuffer(buffer);
     };
-  }, [smokeColor]);
+  }, [smokeColor, speed]);
 
   return (
     <canvas
