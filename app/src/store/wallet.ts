@@ -64,6 +64,32 @@ function localRootHex(): string {
   return toHex(fieldToBytes(T().root()));
 }
 
+/** Reconcile local spent flags against the contract's authoritative nullifier
+ *  set. Any note still flagged unspent whose nullifier is already published is
+ *  marked spent. Without this, a stale `spent: false` flag — e.g. after a
+ *  seed-phrase import rediscovers notes that were already spent (the commitment
+ *  stays on the tree; only a nullifier is published) — lets spend selection pick
+ *  an already-spent note, which the contract rejects with NullifierSpent (#2).
+ *  `payer` is any account to simulate the read against; with none we cannot
+ *  query, so notes are returned unchanged. */
+async function reconcileSpentOnChain(
+  notes: StoredNote[], keys: Keys, payer: string | null
+): Promise<StoredNote[]> {
+  if (!payer) return notes;
+  return Promise.all(
+    notes.map(async (n) => {
+      if (n.spent || n.invalidReason || n.leafIndex == null) return n;
+      try {
+        const nf = nullifier(n.note, keys.spendKey, BigInt(n.leafIndex));
+        const spent = await chain.isSpent(payer, fieldToBytes(nf));
+        return spent ? { ...n, spent: true } : n;
+      } catch {
+        return n;
+      }
+    })
+  );
+}
+
 function treeOutOfSyncError(): Error {
   return new Error(
     "local Merkle tree is incomplete or out of sync with the contract; scan/sync again before spending"
@@ -305,7 +331,10 @@ export const useWallet = create<Internal>()(
             TREE = new ClientMerkleTree();
             T().insertMany(events.map((e) => chain.toHex(e.commitment)).map((h) => BigInt("0x" + h)));
             const root = fa ? await chain.getCurrentRoot(fa.publicKey).catch(() => localRootHex()) : localRootHex();
-            const notes = seedHex ? validateStoredNotes(get().notes, events, ensureKeys(seedHex).publicKey) : get().notes;
+            let notes = seedHex ? validateStoredNotes(get().notes, events, ensureKeys(seedHex).publicKey) : get().notes;
+            // Authoritative spent-state reconcile before any spend selection relies
+            // on these flags — prevents re-spending an already-spent note (#2).
+            if (seedHex) notes = await reconcileSpentOnChain(notes, ensureKeys(seedHex), get().payerPublicKey());
             set({
               currentRoot: root,
               nextLeafIndex: T().length,
@@ -339,20 +368,7 @@ export const useWallet = create<Internal>()(
             // nullifier is already published must be marked spent, else the
             // balance double-counts and a spend would fail with NullifierSpent.
             let notes = validateStoredNotes([...get().notes, ...fresh], events, keys.publicKey);
-            if (feeAccount) {
-              notes = await Promise.all(
-                notes.map(async (n) => {
-                  if (n.spent || n.invalidReason || n.leafIndex == null) return n;
-                  try {
-                    const nf = nullifier(n.note, keys.spendKey, BigInt(n.leafIndex));
-                    const spent = await chain.isSpent(feeAccount.publicKey, fieldToBytes(nf));
-                    return spent ? { ...n, spent: true } : n;
-                  } catch {
-                    return n;
-                  }
-                })
-              );
-            }
+            notes = await reconcileSpentOnChain(notes, keys, get().payerPublicKey());
             set({
               notes,
               balanceShielded: totalUnspent(notes),
