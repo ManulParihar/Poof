@@ -4,7 +4,7 @@ A real web wallet for the Poof shielded pool. It generates **real Groth16 proofs
 in the browser** and submits **real on-chain `transact` calls** to the deployed
 Soroban contract — no mocks on the critical path.
 
-![confirmed deposit](e2e/screenshots/06-confirmed.png)
+![confirmed shielded payment](e2e/screenshots/04-withdraw-confirmed.png)
 
 ## What it does
 - **Create / import** a Poof identity (32-byte seed → key hierarchy).
