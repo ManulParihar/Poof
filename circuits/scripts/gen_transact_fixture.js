@@ -45,7 +45,8 @@ function emptyExtDataHashDec() {
   const addr = Buffer.from(SETTLE_G, "ascii");
   const addrLen = Buffer.alloc(4);
   addrLen.writeUInt32BE(addr.length);
-  const buf = Buffer.concat([zeros, addrLen, addr]); // + settlement strkey binding
+  // settlement strkey binding || relayer strkey binding (fixture relayer == SETTLE_G)
+  const buf = Buffer.concat([zeros, addrLen, addr, addrLen, addr]);
   const digestHex = keccak256(buf);
   const reduced = BigInt("0x" + digestHex) % R;
   return reduced.toString();

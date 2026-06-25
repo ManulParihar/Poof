@@ -84,20 +84,21 @@ describe("extDataHash determinism + sensitivity", () => {
   const emptyBase = () => ({
     recipient: new Uint8Array(32), relayer: new Uint8Array(32), fee: 0n,
     ciphertexts: [new Uint8Array(), new Uint8Array()] as [Uint8Array, Uint8Array],
-    viewTags: [0, 0] as [number, number], settlementAddress: SETTLE_G,
+    viewTags: [0, 0] as [number, number], settlementAddress: SETTLE_G, relayerAddress: SETTLE_G,
   });
 
-  it("changes when recipient changes / settlement address changes", () => {
+  it("changes when recipient changes / settlement / relayer address changes", () => {
     const base = emptyBase();
     expect(extDataHash(base)).toBe(extDataHash(base));
     expect(extDataHash({ ...base, recipient: fieldToBytes(5n) })).not.toBe(extDataHash(base));
     expect(extDataHash({ ...base, settlementAddress: "GBOTHERADDRESS" })).not.toBe(extDataHash(base));
+    expect(extDataHash({ ...base, relayerAddress: "GBOTHERADDRESS" })).not.toBe(extDataHash(base));
   });
 
-  it("matches the on-chain empty-ExtData hash (with settlement binding)", () => {
-    // value computed by the contract / gen_transact_fixture.js for the SETTLE_G case
+  it("matches the on-chain empty-ExtData hash (settlement + relayer binding)", () => {
+    // value computed by the contract / gen_transact_fixture.js (relayer == settlement == SETTLE_G)
     expect(extDataHash(emptyBase()).toString()).toBe(
-      "19770379959592559262147413031436042315599261732788161869224785290507777222292"
+      "21423282781457419858409936734330990694490785550168911563659066507330901180028"
     );
   });
 });

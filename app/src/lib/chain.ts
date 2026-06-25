@@ -50,6 +50,7 @@ export interface ExtDataWire {
   viewTag0: number;
   viewTag1: number;
   settlementAddress: string; // Stellar G-address strkey
+  relayerAddress: string; // Stellar G-address strkey (relayer payout)
 }
 
 function proofScVal(p: ProofBytes): xdr.ScVal {
@@ -79,6 +80,7 @@ function extScVal(e: ExtDataWire): xdr.ScVal {
     view_tag0: nativeToScVal(e.viewTag0, { type: "u32" }),
     view_tag1: nativeToScVal(e.viewTag1, { type: "u32" }),
     settlement_address: Address.fromString(e.settlementAddress).toScVal(),
+    relayer_address: Address.fromString(e.relayerAddress).toScVal(),
   });
 }
 

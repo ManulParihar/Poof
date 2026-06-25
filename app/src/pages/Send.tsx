@@ -1,16 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useWallet } from "../store/wallet";
 import { AmountInput, Spinner, useToast } from "../components/ui";
 import CurrencySelect from "../components/CurrencySelect";
 import TxProgress from "../components/TxProgress";
+import AnonymityMeter from "../components/AnonymityMeter";
 import { currencyById, toBaseUnits, fromBaseUnits, DEFAULT_CURRENCY_ID } from "../lib/currencies";
-
-// A Poof address is encoded as `pubkey.encPubHex` for easy paste/QR.
-function parseAddress(s: string): { pubkey: string; encPub: string } | null {
-  const [pubkey, encPub] = s.trim().split(".");
-  if (!pubkey || !encPub || !/^[0-9]+$/.test(pubkey) || !/^[0-9a-fA-F]{64}$/.test(encPub)) return null;
-  return { pubkey, encPub };
-}
+import { parsePaymentLink } from "../lib/paymentLink";
 
 export default function Send() {
   const { send, txs, balancesByCurrency, address } = useWallet();
@@ -21,23 +16,40 @@ export default function Send() {
   const [busy, setBusy] = useState(false);
   const [memo, setMemo] = useState("");
   const [showMemo, setShowMemo] = useState(false);
+  // track which request link we've already auto-applied so we don't fight edits
+  const [appliedLink, setAppliedLink] = useState<string | null>(null);
   const toast = useToast();
   const currency = currencyById(currencyId);
   const balance = balancesByCurrency[currencyId] ?? 0n;
   const tx = started ? txs.find((t) => t.kind === "transfer") : undefined;
 
+  // Parse whatever is in the recipient box as a payment request (veil: URI or
+  // bare address). Drives both validation and the "request detected" banner.
+  const parsed = useMemo(() => parsePaymentLink(to), [to]);
+  const isRequest = !!parsed && (!!parsed.amount || !!parsed.label || parsed.currencyId != null || !!parsed.memo);
+
+  // When a NEW request link is pasted, prefill its fields once.
+  useEffect(() => {
+    if (!parsed || !to || to === appliedLink) return;
+    if (!isRequest) return;
+    if (parsed.currencyId != null) setCurrencyId(parsed.currencyId);
+    if (parsed.amount) setAmount(parsed.amount);
+    if (parsed.memo) { setMemo(parsed.memo); setShowMemo(true); }
+    setAppliedLink(to);
+    toast.push("Payment request applied", "info");
+  }, [parsed, to, appliedLink, isRequest, toast]);
+
   const submit = async () => {
-    const addr = parseAddress(to);
-    if (!addr) { toast.push("Invalid Poof address (expect pubkey.encpub)", "err"); return; }
+    if (!parsed) { toast.push("Invalid Veil address (expect pubkey.encpub or a veil: link)", "err"); return; }
     const a = toBaseUnits(amount, currency.decimals);
     if (a <= 0n) { toast.push("Enter an amount", "err"); return; }
     if (a > balance) { toast.push("Amount exceeds balance", "err"); return; }
     setBusy(true);
     setStarted(true);
     try {
-      await send(currencyId, addr.pubkey, addr.encPub, a);
+      await send(currencyId, parsed.pubkey, parsed.encPub, a);
       toast.push(`Sent ${amount} ${currency.symbol} privately`, "ok");
-      setTo(""); setAmount("");
+      setTo(""); setAmount(""); setMemo(""); setAppliedLink(null);
     } catch (e: any) {
       toast.push(e.message ?? "send failed", "err");
     } finally { setBusy(false); }
@@ -58,14 +70,31 @@ export default function Send() {
           <CurrencySelect value={currencyId} onChange={setCurrencyId} testid="send-currency" />
         </div>
         <div>
-          <div className="label">Recipient Poof address</div>
-          <input data-testid="send-to" className="input mono text-sm" placeholder="pubkey.encpub" value={to} onChange={(e) => setTo(e.target.value)} />
+          <div className="label">Recipient address or veil: link</div>
+          <input data-testid="send-to" className="input mono text-sm" placeholder="pubkey.encpub  or  veil:…" value={to} onChange={(e) => setTo(e.target.value)} />
+          {to && !parsed && <div className="mt-1 text-xs text-poof-danger">Not a valid Veil address or link.</div>}
           {address && (
-            <button onClick={() => setTo(`${address.pubkey}.${address.encPub}`)} className="mt-1 text-xs text-poof-gold hover:underline">
+            <button onClick={() => { setTo(`${address.pubkey}.${address.encPub}`); setAppliedLink(null); }} className="mt-1 text-xs text-poof-gold hover:underline">
               Send to myself (test)
             </button>
           )}
         </div>
+
+        {isRequest && parsed && (
+          <div data-testid="request-banner" className="animate-fade-in rounded-xl border border-poof-gold/40 bg-poof-gold/10 p-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-poof-gold">
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7L9 18l-5-5"/></svg>
+              Payment request detected
+            </div>
+            {parsed.label && <div className="mt-1 text-sm text-poof-text">{parsed.label}</div>}
+            {parsed.amount && (
+              <div className="mt-0.5 text-xs text-poof-muted">
+                Asking for {parsed.amount} {currencyById(parsed.currencyId ?? 0).symbol}
+              </div>
+            )}
+          </div>
+        )}
+
         <div>
           <div className="label">Amount</div>
           <AmountInput value={amount} onChange={setAmount} max={fromBaseUnits(balance, currency.decimals)} unit={currency.symbol} testid="send-amount" />
@@ -95,6 +124,7 @@ export default function Send() {
             </div>
           )}
         </div>
+        <AnonymityMeter currencyId={currencyId} />
         <button data-testid="send-submit" onClick={submit} disabled={busy} className="btn-primary w-full py-3">
           {busy ? <><Spinner /> Proving…</> : "Send privately"}
         </button>

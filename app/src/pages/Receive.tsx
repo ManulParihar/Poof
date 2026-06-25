@@ -1,17 +1,44 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../store/wallet";
-import { AddressBadge, Spinner, useToast } from "../components/ui";
-import { formatAmount } from "../lib/currencies";
+import { AddressBadge, AmountInput, Spinner, useToast } from "../components/ui";
+import CurrencySelect from "../components/CurrencySelect";
+import { currencyById, formatAmount, DEFAULT_CURRENCY_ID } from "../lib/currencies";
+import { encodePaymentLink } from "../lib/paymentLink";
+
+type Tab = "address" | "request";
 
 export default function Receive() {
   const { address, notes, scanForNotes, syncing } = useWallet();
   const toast = useToast();
   const [scanning, setScanning] = useState(false);
+  const [tab, setTab] = useState<Tab>("address");
+
+  // request-builder state
+  const [amount, setAmount] = useState("");
+  const [currencyId, setCurrencyId] = useState(DEFAULT_CURRENCY_ID);
+  const [label, setLabel] = useState("");
+  const [memo, setMemo] = useState("");
+
   if (!address) return null;
   const full = `${address.pubkey}.${address.encPub}`;
   // newest first so freshly-scanned notes surface at the top
   const sortedNotes = [...notes].sort((a, b) => (b.leafIndex ?? 0) - (a.leafIndex ?? 0));
+
+  const requestLink = useMemo(() => {
+    try {
+      return encodePaymentLink({
+        pubkey: address.pubkey,
+        encPub: address.encPub,
+        amount: amount || undefined,
+        currencyId,
+        label: label || undefined,
+        memo: memo || undefined,
+      });
+    } catch {
+      return full;
+    }
+  }, [address, amount, currencyId, label, memo, full]);
 
   const scan = async () => {
     setScanning(true);
@@ -20,6 +47,8 @@ export default function Receive() {
       toast.push(n > 0 ? `Found ${n} incoming note${n > 1 ? "s" : ""}` : "No new notes found", n > 0 ? "ok" : "info");
     } catch (e: any) { toast.push(e.message, "err"); } finally { setScanning(false); }
   };
+
+  const sym = currencyById(currencyId).symbol;
 
   return (
     <div className="max-w-md mx-auto space-y-6">
@@ -30,16 +59,77 @@ export default function Receive() {
         <h1 className="text-2xl font-bold">Receive</h1>
       </div>
 
-      <div className="card card-glow p-6 flex flex-col items-center">
-        <div className="bg-white rounded-2xl p-4">
-          <QRCodeSVG value={full} size={184} bgColor="#ffffff" fgColor="#0a0a12" level="M" />
-        </div>
-        <div className="mt-4 w-full space-y-2">
-          <div className="label">Your address</div>
-          <div data-testid="receive-address" className="mono text-xs break-all bg-poof-surface rounded-xl p-3 border border-poof-border">{full}</div>
-          <AddressBadge value={full} label="copy address" testid="copy-address" />
-        </div>
+      {/* tab switch */}
+      <div className="flex gap-1 rounded-xl bg-poof-surface border border-poof-border p-1">
+        {([["address", "My address"], ["request", "Request payment"]] as [Tab, string][]).map(([id, lbl]) => (
+          <button
+            key={id}
+            data-testid={`receive-tab-${id}`}
+            onClick={() => setTab(id)}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
+              tab === id ? "bg-poof-lavender/15 text-poof-lavender shadow-[inset_0_0_0_1px_rgba(167,139,250,0.25)]" : "text-poof-muted hover:text-poof-text"
+            }`}
+          >
+            {lbl}
+          </button>
+        ))}
       </div>
+
+      {tab === "address" ? (
+        <div className="card card-glow p-6 flex flex-col items-center">
+          <div className="bg-white rounded-2xl p-4">
+            <QRCodeSVG value={full} size={184} bgColor="#ffffff" fgColor="#0a0a12" level="M" />
+          </div>
+          <div className="mt-4 w-full space-y-2">
+            <div className="label">Your address</div>
+            <div data-testid="receive-address" className="mono text-xs break-all bg-poof-surface rounded-xl p-3 border border-poof-border">{full}</div>
+            <AddressBadge value={full} label="copy address" testid="copy-address" />
+          </div>
+        </div>
+      ) : (
+        <div className="card card-glow p-6 space-y-4">
+          <p className="text-sm text-poof-muted -mt-1">
+            Share a request and the payer's wallet prefills the amount automatically. The link reveals
+            nothing spendable — only where to send.
+          </p>
+          <div>
+            <div className="label">Asset</div>
+            <CurrencySelect value={currencyId} onChange={setCurrencyId} testid="request-currency" />
+          </div>
+          <div>
+            <div className="label">Amount <span className="text-poof-muted font-normal">(optional)</span></div>
+            <AmountInput value={amount} onChange={setAmount} unit={sym} testid="request-amount" />
+          </div>
+          <div>
+            <div className="label">Label <span className="text-poof-muted font-normal">(optional, public)</span></div>
+            <input
+              data-testid="request-label"
+              className="input text-sm"
+              placeholder="e.g. Invoice #42 / Coffee"
+              maxLength={120}
+              value={label}
+              onChange={(e) => setLabel(e.target.value.slice(0, 120))}
+            />
+          </div>
+
+          <div className="rounded-xl bg-white p-4 flex justify-center">
+            <QRCodeSVG data-testid="request-qr" value={requestLink} size={184} bgColor="#ffffff" fgColor="#0a0a12" level="M" />
+          </div>
+
+          <div className="space-y-2">
+            <div className="label">Payment link</div>
+            <div data-testid="request-link" className="mono text-[11px] break-all bg-poof-surface rounded-xl p-3 border border-poof-border">{requestLink}</div>
+            <div className="flex flex-wrap gap-2">
+              <AddressBadge value={requestLink} label="copy link" testid="copy-request-link" />
+              {amount && (
+                <span className="inline-flex items-center rounded-lg bg-poof-gold/10 border border-poof-gold/30 px-3 py-1.5 text-xs text-poof-gold">
+                  Requesting {amount} {sym}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card p-6">
         <div className="flex items-center gap-2 font-medium">

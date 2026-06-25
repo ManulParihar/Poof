@@ -6,7 +6,6 @@ import {
   ShieldCheck,
   LayoutGrid,
   Lightbulb,
-  Shuffle,
   ChartPie,
   Wallet,
   ScanEye,
@@ -14,6 +13,7 @@ import {
 import { useWallet } from "../store/wallet";
 import { analyzePrivacy, type PrivacyFactor, type Recommendation } from "../lib/privacyScore";
 import { Spinner } from "../components/ui";
+import DecoyBooster from "../components/DecoyBooster";
 import PoofSparkle from "../components/PoofSparkle";
 import PoofLottie from "../components/fx/PoofLottie";
 import { formatAmount } from "../lib/currencies";
@@ -327,22 +327,9 @@ export default function Privacy() {
         </motion.div>
       )}
 
-      {/* Remix CTA */}
-      <motion.div className="card glow-ring p-5 flex items-center justify-between" variants={fade} initial="hidden" animate="show" custom={5}>
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-poof-gold/15 grid place-items-center">
-            <Shuffle className="h-4 w-4 text-poof-gold" />
-          </div>
-          <div>
-            <div className="text-sm font-medium">Remix Notes</div>
-            <div className="text-xs text-poof-muted">Self-transfer to break linkability</div>
-          </div>
-        </div>
-        {report.score >= 85 ? (
-          <span className="text-xs text-poof-success px-3 py-1.5 rounded-full bg-poof-success/10">Privacy is strong</span>
-        ) : (
-          <Link to="/app/send" className="btn-primary text-sm px-4 py-2">Remix →</Link>
-        )}
+      {/* Decoy booster — automated remixing to break linkability */}
+      <motion.div variants={fade} initial="hidden" animate="show" custom={5}>
+        <DecoyBooster />
       </motion.div>
     </div>
   );

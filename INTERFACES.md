@@ -73,8 +73,17 @@ redirect funds. Definition (SDK computes, contract recomputes & compares):
 extDataHash = keccak256( recipient(32) || relayer(32) || fee_be(16) ||
                          u32be_len(ct0) || ct0 || u32be_len(ct1) || ct1 ||
                          viewTag[0](1) || viewTag[1](1) ||
-                         u32be_len(settlementStrkey) || settlementStrkey(ascii) ) mod r
+                         u32be_len(settlementStrkey) || settlementStrkey(ascii) ||
+                         u32be_len(relayerStrkey)    || relayerStrkey(ascii) ) mod r
 ```
+- `relayer_address`: the Stellar strkey of the relayer payout account, appended
+  exactly like `settlement_address`. On a WITHDRAW with `fee > 0` the contract
+  releases `fee` to `relayer_address` and `amount - fee` to `settlement_address`
+  (gasless withdrawals); a relayer that submits + pays the network fee is
+  compensated, and binding both strkeys means it can redirect neither leg. For
+  deposits/transfers (`fee == 0`) it is unused on-chain but still hashed — pass a
+  fixed address (clients reuse the settlement strkey). `fee >= amount` →
+  `Error::InvalidFee = 11`.
 - `settlement_address`: the Stellar strkey ("G...") of the deposit/withdraw
   counterparty, appended as `u32-be length || ASCII bytes`. Binds the withdraw
   recipient so a relayer can't redirect funds. For a pure transfer

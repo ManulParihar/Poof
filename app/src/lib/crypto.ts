@@ -216,6 +216,11 @@ export interface ExtData {
   /** Settlement counterparty (Stellar G-address strkey). Bound into the
    *  hash via its ASCII bytes so a withdraw recipient can't be redirected. */
   settlementAddress: string;
+  /** Relayer payout account (Stellar G-address strkey). On a relayed withdraw
+   *  with fee > 0 the pool releases `fee` here and `amount - fee` to the
+   *  settlement address. Bound into the hash so neither leg can be redirected.
+   *  For deposits/transfers (fee == 0) pass any valid address (the settlement). */
+  relayerAddress: string;
 }
 
 function u32be(n: number): Uint8Array {
@@ -241,6 +246,10 @@ export function extDataHash(ext: ExtData): bigint {
   const addr = new TextEncoder().encode(ext.settlementAddress);
   push(u32be(addr.length));
   push(addr);
+  // relayer payout strkey, bound the same way
+  const raddr = new TextEncoder().encode(ext.relayerAddress);
+  push(u32be(raddr.length));
+  push(raddr);
   const digestHex = keccak256(new Uint8Array(parts));
   return BigInt("0x" + digestHex) % R;
 }
