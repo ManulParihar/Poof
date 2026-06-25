@@ -14,6 +14,11 @@ import { toHex, fromHex } from "./crypto";
 
 const server = () => new rpc.Server(RPC_URL, { allowHttp: false });
 
+// Optional durable indexer (the Rust `poof-indexer`, e.g. on Railway). When set,
+// it backfills commitment history that Soroban RPC has aged out of its ~7-day
+// retention window. Purely a fallback: unset → behavior is exactly RPC-only.
+const INDEXER_URL = (import.meta.env.VITE_INDEXER_URL as string | undefined)?.replace(/\/+$/, "") || "";
+
 /**
  * Derive the Stellar fee-payer keypair deterministically from the wallet seed,
  * so recovering a seed restores the SAME fee account (no device-local randomness
@@ -262,13 +267,31 @@ export interface CommitmentEvent {
   ledger: number;
 }
 
+// Fetch the full durable commitment history from the indexer's read API.
+// Shape: GET /notes?since_index=N → [{ cm, idx, ct, view_tag }] (hex + numbers).
+async function getIndexerCommitments(sinceIndex = 0): Promise<CommitmentEvent[]> {
+  const res = await fetch(`${INDEXER_URL}/notes?since_index=${sinceIndex}`);
+  if (!res.ok) throw new Error(`indexer /notes ${res.status}`);
+  const rows = (await res.json()) as { cm: string; idx: number; ct: string; view_tag: number }[];
+  // `ledger` is unused for tree reconstruction (leafIndex ordering is what matters).
+  return rows.map((r) => ({
+    commitment: fromHex(r.cm),
+    leafIndex: r.idx,
+    ciphertext: fromHex(r.ct),
+    viewTag: r.view_tag,
+    ledger: 0,
+  }));
+}
+
 export async function getNewCommitments(startLedger?: number): Promise<CommitmentEvent[]> {
   const s = server();
   // Start from the contract's deploy ledger so the tree includes leaf 0 — a fixed
   // recent window misses the earliest commitments and corrupts the whole tree
   // (wrong leaf indices → wrong root). Clamp to RPC retention; if the contract is
   // older than retention, full history needs the durable indexer.
+  const fullScan = startLedger === undefined;
   let from = startLedger ?? CONTRACT_START_LEDGER;
+  let clamped = false;
   const LIMIT = 200;
   const out: CommitmentEvent[] = [];
   let cursor: string | undefined;
@@ -286,6 +309,7 @@ export async function getNewCommitments(startLedger?: number): Promise<Commitmen
       const m = /(\d{6,})/.exec(String(e?.message ?? e));
       if (page === 0 && !cursor && m && Number(m[1]) > from) {
         from = Number(m[1]) + 1;
+        clamped = true;
         continue;
       }
       throw e;
@@ -310,8 +334,24 @@ export async function getNewCommitments(startLedger?: number): Promise<Commitmen
     // first means we've caught up to head.
     if (evs.length === 0 && page > 0) break;
   }
-  // dedupe by leaf index (idempotent) and order
+  // Durable backfill: on a full scan, if RPC retention forced us to start above
+  // the deploy ledger (clamped) or the earliest leaf is missing, the tree is
+  // incomplete. Pull the full history from the indexer and merge. Best-effort —
+  // a down/unset indexer never breaks the working RPC path.
+  let backfill: CommitmentEvent[] = [];
+  const earliestMissing = out.length === 0 || Math.min(...out.map((e) => e.leafIndex)) > 0;
+  if (INDEXER_URL && fullScan && (clamped || earliestMissing)) {
+    try {
+      backfill = await getIndexerCommitments(0);
+    } catch (err) {
+      console.warn("indexer backfill failed; using RPC-only scan", err);
+    }
+  }
+  // dedupe by leaf index (idempotent) and order. Seed with indexer rows, then let
+  // fresher RPC events overwrite for any shared leaf (payloads match; RPC carries
+  // the real ledger). Result is the union ordered by leaf index.
   const byIdx = new Map<number, CommitmentEvent>();
+  for (const e of backfill) byIdx.set(e.leafIndex, e);
   for (const e of out) byIdx.set(e.leafIndex, e);
   return [...byIdx.values()].sort((a, b) => a.leafIndex - b.leafIndex);
 }

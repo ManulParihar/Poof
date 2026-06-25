@@ -23,8 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /src/target/release/poof-indexer /usr/local/bin/poof-indexer
 
 # Persist the SQLite DB on a mounted volume (see fly.toml / -v above).
+# POOF_BIND is intentionally NOT baked in: the binary defaults to 0.0.0.0:8080
+# but honors a PaaS-injected $PORT (Railway) when POOF_BIND is unset. Fly sets
+# POOF_BIND explicitly in fly.toml, so its behavior is unchanged.
 ENV POOF_DB_PATH=/data/poof-indexer.db \
-    POOF_BIND=0.0.0.0:8080 \
     POOF_RPC_URL=https://soroban-testnet.stellar.org \
     RUST_LOG=info
 # POOF_CONTRACT_ID must be supplied at runtime, or it serves the DB read-only.
