@@ -145,6 +145,7 @@ export const useWallet = create<Internal>()(
               viewTag0: bundle.extData.viewTags[0],
               viewTag1: bundle.extData.viewTags[1],
               settlementAddress: bundle.extData.settlementAddress,
+              relayerAddress: bundle.extData.relayerAddress,
             }
           );
           onSuccess(res);

@@ -34,6 +34,12 @@ pub struct ExtData {
     /// redirected. For a pure transfer (publicAmount == 0) it is unused on-chain
     /// but still hashed, so the client must pass a fixed address.
     pub settlement_address: String,
+    /// Relayer payout account as a Stellar strkey. On a relayed WITHDRAW with
+    /// `fee > 0`, the pool releases `fee` here and `amount - fee` to
+    /// `settlement_address`. Bound into the hash via its ASCII bytes so neither
+    /// leg can be redirected. For deposits/transfers (`fee == 0`) it is unused
+    /// on-chain but still hashed — pass any valid address (the settlement one).
+    pub relayer_address: String,
 }
 
 impl ExtData {
@@ -57,6 +63,10 @@ impl ExtData {
         let addr = self.settlement_address.as_bytes();
         k.update(&(addr.len() as u32).to_be_bytes());
         k.update(addr);
+        // relayer payout strkey, bound the same way
+        let raddr = self.relayer_address.as_bytes();
+        k.update(&(raddr.len() as u32).to_be_bytes());
+        k.update(raddr);
         let mut digest = [0u8; 32];
         k.finalize(&mut digest);
         // Reduce the 32-byte keccak digest mod r (big-endian).
@@ -272,6 +282,7 @@ mod tests {
             ciphertexts: [vec![1, 2, 3], vec![4, 5, 6, 7]],
             view_tags: [0xab, 0xcd],
             settlement_address: "GAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJLM".into(),
+            relayer_address: "GAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJLM".into(),
         }
     }
 
@@ -286,6 +297,14 @@ mod tests {
         let a = ext([5u8; 32]);
         let b = ext([6u8; 32]); // different recipient
         assert_ne!(a.ext_data_hash(), b.ext_data_hash());
+    }
+
+    #[test]
+    fn ext_data_hash_sensitive_to_relayer_address() {
+        let base = ext([5u8; 32]);
+        let mut other = base.clone();
+        other.relayer_address = "GDAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJL".into();
+        assert_ne!(base.ext_data_hash(), other.ext_data_hash(), "relayer payout is bound");
     }
 
     #[test]

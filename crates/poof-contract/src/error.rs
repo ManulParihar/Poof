@@ -30,4 +30,7 @@ pub enum Error {
     UnknownCurrency = 9,
     /// A privileged call (e.g. `register_token`) was made by a non-admin.
     Unauthorized = 10,
+    /// A relayed withdraw declared a `fee` that is >= the withdrawn amount (it
+    /// would leave the recipient nothing or underflow the remainder).
+    InvalidFee = 11,
 }

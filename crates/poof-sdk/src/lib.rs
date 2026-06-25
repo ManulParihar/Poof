@@ -158,6 +158,8 @@ impl Wallet {
             // pure transfer (publicAmount == 0): settlement unused on-chain but
             // still bound; a fixed placeholder strkey keeps the hash deterministic.
             settlement_address: "GAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJLM".into(),
+            // transfer has no relayer (fee == 0); bind a fixed address.
+            relayer_address: "GAKON75EXHETR5EAUTZLO5S7YSYMUXV4VRAPYWHHD4AG2QVSBAM3CJLM".into(),
         };
 
         let witness = TransactWitness {

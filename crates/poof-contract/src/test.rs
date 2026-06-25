@@ -94,7 +94,16 @@ fn ext_with_settlement(env: &Env, settlement: &Address) -> ExtData {
         view_tag0: 0,
         view_tag1: 0,
         settlement_address: settlement.clone(),
+        relayer_address: settlement.clone(),
     }
+}
+
+/// A relayed withdraw ExtData: `fee` is paid to `relayer` out of the amount.
+fn ext_relayed(env: &Env, settlement: &Address, relayer: &Address, fee: u128) -> ExtData {
+    let mut e = ext_with_settlement(env, settlement);
+    e.relayer_address = relayer.clone();
+    e.fee = fee;
+    e
 }
 
 /// extDataHash via the contract's own logic — no replica to drift.
@@ -323,6 +332,60 @@ fn withdraw_releases_tokens_from_pool() {
 
     assert_eq!(h.token.balance(&recipient), 40, "recipient received 40");
     assert_eq!(h.token.balance(&h.pool), 60, "pool retains 60");
+}
+
+/// Gasless withdraw: a relayer fee is split off to the relayer, the remainder
+/// goes to the recipient, and the two legs sum to the withdrawn amount.
+#[test]
+fn relayed_withdraw_splits_fee_to_relayer() {
+    let h = setup();
+    let depositor = Address::generate(&h.env);
+    h.token_admin.mint(&depositor, &1000);
+
+    // fund the pool: deposit 100
+    let ext_d = ext_with_settlement(&h.env, &depositor);
+    let mut sd = signals(&h.env, &h.client.current_root(), &ext_d, 1, 2, 3, 4);
+    sd.public_amount = fe(&h.env, 100);
+    h.client.transact(&valid_proof(&h.env), &sd, &ext_d);
+
+    // withdraw 40, of which 5 is the relayer fee
+    let recipient = Address::generate(&h.env);
+    let relayer = Address::generate(&h.env);
+    let ext_w = ext_relayed(&h.env, &recipient, &relayer, 5);
+    let mut sw = signals(&h.env, &h.client.current_root(), &ext_w, 5, 6, 7, 8);
+    sw.public_amount = neg_fe(&h.env, 40);
+    h.client.transact(&valid_proof(&h.env), &sw, &ext_w);
+
+    assert_eq!(h.token.balance(&relayer), 5, "relayer got the fee");
+    assert_eq!(h.token.balance(&recipient), 35, "recipient got amount - fee");
+    assert_eq!(h.token.balance(&h.pool), 60, "pool retains 60");
+}
+
+/// A relayed withdraw whose fee is >= the amount is rejected (no funds move).
+#[test]
+fn relayed_withdraw_fee_too_high_reverts() {
+    let h = setup();
+    let depositor = Address::generate(&h.env);
+    h.token_admin.mint(&depositor, &1000);
+    let ext_d = ext_with_settlement(&h.env, &depositor);
+    let mut sd = signals(&h.env, &h.client.current_root(), &ext_d, 1, 2, 3, 4);
+    sd.public_amount = fe(&h.env, 100);
+    h.client.transact(&valid_proof(&h.env), &sd, &ext_d);
+
+    let recipient = Address::generate(&h.env);
+    let relayer = Address::generate(&h.env);
+    let ext_w = ext_relayed(&h.env, &recipient, &relayer, 40); // fee == amount
+    let mut sw = signals(&h.env, &h.client.current_root(), &ext_w, 5, 6, 7, 8);
+    sw.public_amount = neg_fe(&h.env, 40);
+    let err = h
+        .client
+        .try_transact(&valid_proof(&h.env), &sw, &ext_w)
+        .err()
+        .unwrap()
+        .unwrap();
+    assert_eq!(err, Error::InvalidFee);
+    assert_eq!(h.token.balance(&relayer), 0);
+    assert_eq!(h.token.balance(&h.pool), 100, "pool untouched");
 }
 
 /// A withdraw larger than the pool's custody fails (the token transfer reverts

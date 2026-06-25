@@ -215,17 +215,27 @@ fn hash_ext_data(env: &Env, ext: &ExtData) -> BytesN<32> {
     buf.append(&Bytes::from_array(env, &[ext.view_tag1 as u8]));
     // Settlement address, bound via its strkey so a withdraw recipient
     // cannot be redirected: u32-be length || strkey bytes.
-    let addr_str = ext.settlement_address.to_string();
-    let len = addr_str.len() as usize;
-    let mut sbuf = [0u8; 64]; // strkey is ≤ 56 chars
-    addr_str.copy_into_slice(&mut sbuf[..len]);
-    buf.append(&Bytes::from_array(env, &(len as u32).to_be_bytes()));
-    buf.append(&Bytes::from_slice(env, &sbuf[..len]));
+    append_addr_strkey(env, &mut buf, &ext.settlement_address);
+    // Relayer payout address, bound the same way so neither the fee nor the
+    // remainder of a relayed withdraw can be redirected.
+    append_addr_strkey(env, &mut buf, &ext.relayer_address);
 
     let digest = env.crypto().keccak256(&buf);
     // Reduce mod r so it matches the circuit's field-element public input.
     let reduced = Bn254Fr::from_bytes(digest.into());
     reduced.to_bytes()
+}
+
+/// Append a Stellar address to the hash preimage as `u32-be strkey length ||
+/// ASCII strkey bytes`. Shared by the settlement and relayer bindings so both
+/// match the SDK's `extDataHash` byte-for-byte.
+fn append_addr_strkey(env: &Env, buf: &mut Bytes, addr: &Address) {
+    let addr_str = addr.to_string();
+    let len = addr_str.len() as usize;
+    let mut sbuf = [0u8; 64]; // strkey is ≤ 56 chars
+    addr_str.copy_into_slice(&mut sbuf[..len]);
+    buf.append(&Bytes::from_array(env, &(len as u32).to_be_bytes()));
+    buf.append(&Bytes::from_slice(env, &sbuf[..len]));
 }
 
 /// BN254 scalar field modulus `r`, big-endian — used to recover a withdraw's
@@ -312,7 +322,21 @@ fn settle_public_amount(
             token.transfer(&ext.settlement_address, MuxedAddress::from(&pool), &amount);
         }
         Settlement::Withdraw(amount) => {
-            token.transfer(&pool, MuxedAddress::from(&ext.settlement_address), &amount);
+            // Gasless withdrawals: a relayer that submitted (and paid the Stellar
+            // network fee for) this tx is compensated with `fee` out of the
+            // withdrawn amount; the recipient gets the remainder. Both legs come
+            // from the pool's custody, and both destinations are bound into
+            // `extDataHash`, so the relayer can redirect neither.
+            let fee = ext.fee as i128;
+            if fee > 0 {
+                if fee >= amount {
+                    return Err(Error::InvalidFee);
+                }
+                token.transfer(&pool, MuxedAddress::from(&ext.relayer_address), &fee);
+                token.transfer(&pool, MuxedAddress::from(&ext.settlement_address), &(amount - fee));
+            } else {
+                token.transfer(&pool, MuxedAddress::from(&ext.settlement_address), &amount);
+            }
         }
     }
     Ok(())

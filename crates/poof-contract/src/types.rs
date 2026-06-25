@@ -94,6 +94,14 @@ pub struct ExtData {
     /// Bound into `extDataHash` via its strkey so a relayer cannot redirect a
     /// withdraw.
     pub settlement_address: Address,
+    /// Relayer payout account (Stellar address). On a WITHDRAW with `fee > 0`,
+    /// the pool releases `fee` here and `amount - fee` to `settlement_address`,
+    /// letting a third party submit + pay the Stellar network fee on the user's
+    /// behalf (gasless withdrawals). Bound into `extDataHash` via its strkey so a
+    /// relayer cannot redirect the fee or the remainder. For deposits/transfers
+    /// (`fee == 0`) it is unused on-chain but still hashed — pass any valid
+    /// address (clients use the settlement address).
+    pub relayer_address: Address,
 }
 
 /// Immutable-after-init tree parameters.

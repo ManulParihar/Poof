@@ -38,6 +38,8 @@ fn empty_ext(env: &Env) -> ExtData {
         view_tag0: 0,
         view_tag1: 0,
         settlement_address: Address::from_string(&String::from_str(env, SETTLE_G)),
+        // fixture binds the relayer to the same address as settlement (fee == 0)
+        relayer_address: Address::from_string(&String::from_str(env, SETTLE_G)),
     }
 }
 

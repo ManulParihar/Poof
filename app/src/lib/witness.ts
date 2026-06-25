@@ -47,7 +47,8 @@ function assemble(
   relayer: Uint8Array,
   recipient: Uint8Array,
   fee: bigint,
-  settlementAddress: string
+  settlementAddress: string,
+  relayerAddress: string
 ): WitnessBundle {
   // encrypt outputs to their owners
   const encrypted = outs.map((o) => {
@@ -63,6 +64,7 @@ function assemble(
     ciphertexts: [encrypted[0].wire, encrypted[1].wire],
     viewTags: [encrypted[0].enc.viewTag, encrypted[1].enc.viewTag],
     settlementAddress,
+    relayerAddress,
   };
   const extHash = computeExtDataHash(extData);
 
@@ -160,7 +162,7 @@ export function buildDeposit(params: {
       { amount, pubkey: selfPub, blinding: rand(), encPub: selfEncPub },
       { amount: 0n, pubkey: selfPub, blinding: rand(), encPub: selfEncPub },
     ],
-    new Uint8Array(32), fieldToBytes(selfPub), 0n, settlementAddress
+    new Uint8Array(32), fieldToBytes(selfPub), 0n, settlementAddress, settlementAddress
   );
 }
 
@@ -220,21 +222,32 @@ export function buildTransfer(params: {
       { amount, pubkey: recipientPub, blinding: rand(), encPub: recipientEncPub },
       { amount: change, pubkey: selfPub, blinding: rand(), encPub: selfEncPub },
     ],
-    new Uint8Array(32), fieldToBytes(recipientPub), 0n, settlementAddress
+    new Uint8Array(32), fieldToBytes(recipientPub), 0n, settlementAddress, settlementAddress
   );
 }
 
-/** Withdraw: burn `amount` from 1–2 real notes (publicAmount = R - amount), change to self. */
+/** Withdraw: burn `amount` from 1–2 real notes (publicAmount = R - amount), change to self.
+ *  When `relayerAddress`/`fee` are given, the contract releases `fee` to the
+ *  relayer and `amount - fee` to `settlementAddress` (gasless withdrawal). The
+ *  `amount` here is the TOTAL burned from notes; the recipient nets `amount-fee`. */
 export function buildWithdraw(params: {
   tree: ClientMerkleTree;
   sk: bigint; selfPub: bigint; selfEncPub: Uint8Array;
   inputs: SpendInput[]; amount: bigint;
   settlementAddress: string;
+  relayerAddress?: string;
+  fee?: bigint;
 }): WitnessBundle {
   const { tree, sk, selfPub, selfEncPub, inputs, amount, settlementAddress } = params;
+  const fee = params.fee ?? 0n;
+  const relayerAddress = params.relayerAddress ?? settlementAddress;
+  if (fee < 0n) throw new Error("fee cannot be negative");
+  if (fee >= amount) throw new Error("relayer fee must be smaller than the withdrawal amount");
   const { specs, sumIn, currencyId } = spendInputs(tree, sk, inputs);
   const change = sumIn - amount;
   if (change < 0n) throw new Error("inputs don't cover the amount");
+  // relayer identity bytes: the Stellar account's 32-byte ed25519 key, for the
+  // hashed `relayer` field (the on-chain payout uses `relayerAddress`).
   return assemble(
     tree.root(), (R - amount) % R, currencyId,
     specs,
@@ -242,6 +255,6 @@ export function buildWithdraw(params: {
       { amount: change, pubkey: selfPub, blinding: rand(), encPub: selfEncPub },
       { amount: 0n, pubkey: selfPub, blinding: rand(), encPub: selfEncPub },
     ],
-    new Uint8Array(32), fieldToBytes(selfPub), 0n, settlementAddress
+    new Uint8Array(32), fieldToBytes(selfPub), fee, settlementAddress, relayerAddress
   );
 }
