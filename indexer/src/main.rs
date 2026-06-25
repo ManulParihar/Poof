@@ -7,7 +7,7 @@
 //! - `POOF_CONTRACT_ID`    pool contract id to filter on    (required for live ingest)
 //! - `POOF_POLL_SECS`      poll interval in seconds         (default: 5)
 //! - `POOF_FINALITY_LAG`   confirmations before ingest      (default: 5)
-//! - `POOF_BIND`           HTTP bind address                (default: 0.0.0.0:8080)
+//! - `POOF_BIND`           HTTP bind address                (default: 0.0.0.0:$PORT or 0.0.0.0:8080)
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +39,12 @@ async fn main() -> anyhow::Result<()> {
     let finality_lag: u64 = env_or("POOF_FINALITY_LAG", "5")
         .parse()
         .unwrap_or(ingest::DEFAULT_FINALITY_LAG);
-    let bind = env_or("POOF_BIND", "0.0.0.0:8080");
+    // `POOF_BIND` wins when set (Fly sets it explicitly). Otherwise, honor the
+    // `PORT` injected by PaaS hosts like Railway/Render; fall back to 8080.
+    let bind = std::env::var("POOF_BIND").unwrap_or_else(|_| match std::env::var("PORT") {
+        Ok(port) => format!("0.0.0.0:{port}"),
+        Err(_) => "0.0.0.0:8080".to_string(),
+    });
 
     let store = Arc::new(Store::open(&db_path)?);
     tracing::info!(db = %db_path, "store ready");
