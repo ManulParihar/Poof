@@ -12,6 +12,7 @@ import Withdraw from "./pages/Withdraw";
 import Receive from "./pages/Receive";
 import Activity from "./pages/Activity";
 import Privacy from "./pages/Privacy";
+import Disclosure from "./pages/Disclosure";
 
 export default function App() {
   const initialised = useWallet((s) => s.initialised);
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/app/receive" element={ready ? <Layout><Receive /></Layout> : <Navigate to="/app/welcome" replace />} />
         <Route path="/app/activity" element={ready ? <Layout><Activity /></Layout> : <Navigate to="/app/welcome" replace />} />
         <Route path="/app/privacy" element={ready ? <Layout><Privacy /></Layout> : <Navigate to="/app/welcome" replace />} />
+        <Route path="/app/disclosure" element={ready ? <Layout><Disclosure /></Layout> : <Navigate to="/app/welcome" replace />} />
 
         {/* Legacy deep links → keep old bookmarks working */}
         <Route path="/welcome" element={<Navigate to="/app/welcome" replace />} />

@@ -13,6 +13,7 @@ const NAV = [
   { to: "/app/receive", label: "Receive", icon: "M19 12H5M11 18l-6-6 6-6" },
   { to: "/app/activity", label: "Activity", icon: "M3 12h4l3 8 4-16 3 8h4" },
   { to: "/app/privacy", label: "Privacy", icon: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" },
+  { to: "/app/disclosure", label: "Disclosure", icon: "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7zM12 9a3 3 0 100 6 3 3 0 000-6" },
 ];
 
 function Icon({ d }: { d: string }) {
