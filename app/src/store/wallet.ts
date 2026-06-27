@@ -103,6 +103,9 @@ function assertSyncedTreeRoot(currentRoot: string | null): void {
 
 interface Internal extends WalletState {
   _feeSecret: string | null;
+  // throwaway session key for delegated ("sign once") signing. In-memory only —
+  // deliberately excluded from `partialize` so it never touches localStorage.
+  _delegate: { secret: string; publicKey: string; expiresAt: number } | null;
 }
 
 export const useWallet = create<Internal>()(
@@ -184,10 +187,16 @@ export const useWallet = create<Internal>()(
         syncing: false,
         feeBalance: null,
         _feeSecret: null,
+        _delegate: null,
 
         // ── signer accessors ──
         getSigner: (): Signer => {
-          const { signerKind, connectedAddress, connectedWalletId, _feeSecret } = get();
+          const { signerKind, connectedAddress, connectedWalletId, _feeSecret, _delegate } = get();
+          // While a delegation is live, sign silently with the session key — this
+          // is the whole point: fired transfers don't prompt the connected wallet.
+          if (_delegate && now() < _delegate.expiresAt) {
+            return new LocalSigner(Keypair.fromSecret(_delegate.secret));
+          }
           if (signerKind === "wallet") {
             if (!connectedAddress || !connectedWalletId) throw new Error("wallet not connected");
             return new WalletKitSigner(connectedAddress, connectedWalletId, walletkit.canSignAuthEntry(connectedWalletId));
@@ -197,8 +206,33 @@ export const useWallet = create<Internal>()(
         },
 
         payerPublicKey: (): string | null => {
-          const { signerKind, connectedAddress, feeAccount } = get();
+          const { signerKind, connectedAddress, feeAccount, _delegate } = get();
+          // Keep the proof's bound settlementAddress consistent with the source
+          // account submitTransact actually uses (the session key) while delegated.
+          if (_delegate && now() < _delegate.expiresAt) return _delegate.publicKey;
           return signerKind === "wallet" ? connectedAddress : (feeAccount?.publicKey ?? null);
+        },
+
+        delegateExpiresAt: null,
+
+        delegationActive: (): boolean => {
+          const { _delegate } = get();
+          return !!_delegate && now() < _delegate.expiresAt;
+        },
+
+        startDelegation: async (ttlMs: number) => {
+          // Local-identity mode already signs silently — nothing to delegate.
+          if (get().signerKind !== "wallet") return;
+          const kp = Keypair.random();
+          // Fund the throwaway account so it can pay Stellar network fees. On
+          // testnet friendbot does this for free, with no user signature.
+          await chain.friendbotFund(kp.publicKey());
+          const expiresAt = now() + ttlMs;
+          set({ _delegate: { secret: kp.secret(), publicKey: kp.publicKey(), expiresAt }, delegateExpiresAt: expiresAt });
+        },
+
+        revokeDelegation: () => {
+          set({ _delegate: null, delegateExpiresAt: null });
         },
 
         createIdentity: async (seedHex?: string) => {
@@ -275,7 +309,8 @@ export const useWallet = create<Internal>()(
           set({
             initialised: false, seedHex: null, address: null, feeAccount: null,
             signerKind: "local", connectedWalletId: null, connectedAddress: null,
-            _feeSecret: null, notes: [], balanceShielded: 0n, balancesByCurrency: {},
+            _feeSecret: null, _delegate: null, delegateExpiresAt: null,
+            notes: [], balanceShielded: 0n, balancesByCurrency: {},
             currentRoot: null, nextLeafIndex: null, txs: [], feeBalance: null,
             txArchive: archive,
           });
@@ -287,7 +322,8 @@ export const useWallet = create<Internal>()(
           set({
             initialised: false, seedHex: null, address: null, feeAccount: null,
             signerKind: "local", connectedWalletId: null, connectedAddress: null,
-            _feeSecret: null, notes: [], balanceShielded: 0n, balancesByCurrency: {},
+            _feeSecret: null, _delegate: null, delegateExpiresAt: null,
+            notes: [], balanceShielded: 0n, balancesByCurrency: {},
             currentRoot: null, nextLeafIndex: null, txs: [], feeBalance: null,
             txArchive: {},
           });

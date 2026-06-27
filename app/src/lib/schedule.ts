@@ -112,6 +112,17 @@ export function dueSchedules(list: ScheduledPayment[], now = Date.now()): Schedu
   return list.filter((s) => isDue(s, now));
 }
 
+/** The Demo cadence (every minute). Only schedules on this interval may fire
+ *  while a delegation (session key) is active — see {@link fireableNow}. */
+export const DEMO_INTERVAL_SEC = 60;
+
+/** Subset of schedules eligible to fire this tick. With a delegation active
+ *  (`demoOnly`), only the Demo (1m) cadence the user opted into may fire; other
+ *  intervals are deferred so the throwaway session key never silently signs them. */
+export function fireableNow(list: ScheduledPayment[], demoOnly: boolean): ScheduledPayment[] {
+  return demoOnly ? list.filter((s) => s.intervalSec === DEMO_INTERVAL_SEC) : list;
+}
+
 /** Advance a schedule's nextRun past `now` by whole intervals (no catch-up storm
  *  if the app was closed for days — it fires once, then lands in the future). */
 export function reschedule(s: ScheduledPayment, now = Date.now()): ScheduledPayment {

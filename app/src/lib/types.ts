@@ -140,6 +140,20 @@ export interface WalletState {
   /** The G-address that pays fees / settles / receives faucet drips. */
   payerPublicKey: () => string | null;
 
+  // delegated ("sign once") signing
+  /** Epoch ms the active delegation expires, or null if none active. While
+   *  active, fired transfers sign silently with a throwaway session key instead
+   *  of prompting the connected external wallet. In-memory only (never persisted)
+   *  and capped by a TTL. */
+  delegateExpiresAt: number | null;
+  /** True iff a delegation is set and not yet expired. */
+  delegationActive: () => boolean;
+  /** Spin up a throwaway session fee-account (funded via friendbot) that signs
+   *  fired transfers silently for `ttlMs`. No-op in local-identity mode. */
+  startDelegation: (ttlMs: number) => Promise<void>;
+  /** Tear down the active delegation; subsequent transfers prompt the wallet again. */
+  revokeDelegation: () => void;
+
   // accounts
   fundFeeAccount: () => Promise<void>;
   refreshFeeBalance: () => Promise<void>;

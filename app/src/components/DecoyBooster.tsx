@@ -14,18 +14,22 @@ const SPEEDS = [
 ] as const;
 
 export default function DecoyBooster() {
-  const { send, address, balancesByCurrency } = useWallet();
+  const { send, address, balancesByCurrency, signerKind, startDelegation, revokeDelegation } = useWallet();
   const toast = useToast();
   const [currencyId, setCurrencyId] = useState(DEFAULT_CURRENCY_ID);
   const [rounds, setRounds] = useState(3);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]["id"]>("demo");
   const [running, setRunning] = useState(false);
+  const [delegate, setDelegate] = useState(true);
   const [progress, setProgress] = useState<DecoyRoundInfo | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const balance = balancesByCurrency[currencyId] ?? 0n;
   const sym = currencyById(currencyId).symbol;
   const preset = SPEEDS.find((s) => s.id === speed)!;
+  // Only external wallets prompt per-tx; local identities already sign silently.
+  const canDelegate = signerKind === "wallet";
+  const useDelegate = canDelegate && delegate;
 
   const start = async () => {
     if (!address) return;
@@ -34,7 +38,20 @@ export default function DecoyBooster() {
     abortRef.current = ac;
     setRunning(true);
     setProgress(null);
+    let delegated = false;
     try {
+      if (useDelegate) {
+        // TTL bounds the session key's life to the worst-case run length plus
+        // per-round proof+submit headroom; revoked again in `finally`.
+        const ttlMs = rounds * (preset.max + 30) * 1000 + 15_000;
+        try {
+          await startDelegation(ttlMs);
+          delegated = true;
+        } catch (e: any) {
+          toast.push(`Couldn't delegate signing: ${e?.message ?? e}`, "err");
+          return;
+        }
+      }
       const done = await runDecoyRounds({
         rounds, currencyId, minDelaySec: preset.min, maxDelaySec: preset.max,
         send, address,
@@ -48,6 +65,7 @@ export default function DecoyBooster() {
     } catch (e: any) {
       toast.push(e?.message ?? "decoy run failed", "err");
     } finally {
+      if (delegated) revokeDelegation();
       setRunning(false);
       setProgress(null);
       abortRef.current = null;
@@ -106,6 +124,18 @@ export default function DecoyBooster() {
           ))}
         </div>
       </div>
+
+      {canDelegate && (
+        <label className="flex items-start gap-2.5 rounded-xl border border-poof-border bg-poof-surface/40 p-3 cursor-pointer">
+          <input type="checkbox" data-testid="decoy-delegate" checked={delegate} disabled={running}
+            onChange={(e) => setDelegate(e.target.checked)} className="mt-0.5 accent-poof-gold" />
+          <span className="text-xs text-poof-muted">
+            <span className="text-poof-text font-medium">Sign once (delegate)</span> — use a throwaway
+            session key so rounds run unattended without a wallet prompt each time. It holds only fee
+            dust and is discarded when the run ends.
+          </span>
+        </label>
+      )}
 
       {progress && (
         <div data-testid="decoy-progress" className={`rounded-xl border p-3 text-xs ${progress.phase === "error" ? "border-poof-danger/40 bg-poof-danger/10 text-poof-danger" : "border-poof-border bg-poof-surface/60 text-poof-muted"}`}>
