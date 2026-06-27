@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Play, Pause, Trash2, Plus } from "lucide-react";
+import { CalendarClock, Play, Pause, Trash2, Plus, Zap, ShieldOff } from "lucide-react";
 import { useWallet } from "../store/wallet";
 import { AmountInput, Spinner, useToast } from "../components/ui";
 import CurrencySelect from "../components/CurrencySelect";
+import IntervalSelect from "../components/IntervalSelect";
 import { useSchedules } from "../lib/useScheduler";
-import { INTERVALS } from "../lib/schedule";
+import { INTERVALS, DEMO_INTERVAL_SEC } from "../lib/schedule";
 import { parsePaymentLink } from "../lib/paymentLink";
 import { currencyById, toBaseUnits, formatAmount, DEFAULT_CURRENCY_ID } from "../lib/currencies";
 
@@ -20,8 +21,16 @@ function countdown(ms: number): string {
   return `in ${Math.round(h / 24)}d`;
 }
 
+// How long a delegated ("sign once") session key stays alive for Demo schedules.
+// Kept short by design: the throwaway key should never linger for hours.
+const DELEGATE_TTL_MS = 30 * 60_000;
+
+function clockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 export default function Scheduled() {
-  const { address, balancesByCurrency } = useWallet();
+  const { address, balancesByCurrency, signerKind, delegateExpiresAt, delegationActive, startDelegation, revokeDelegation } = useWallet();
   const { list, add, remove, toggle, runNow, runningId } = useSchedules();
   const toast = useToast();
 
@@ -30,6 +39,7 @@ export default function Scheduled() {
   const [amount, setAmount] = useState("");
   const [currencyId, setCurrencyId] = useState(DEFAULT_CURRENCY_ID);
   const [intervalSec, setIntervalSec] = useState(INTERVALS[2].sec); // daily
+  const [delegating, setDelegating] = useState(false);
   const [, force] = useState(0);
 
   // re-render every second so countdowns tick
@@ -40,6 +50,25 @@ export default function Scheduled() {
 
   const currency = currencyById(currencyId);
   const parsed = useMemo(() => parsePaymentLink(to), [to]);
+
+  // Delegation ("sign once") is only offered for external wallets (local
+  // identities already sign silently) and only when a Demo (1m) schedule is
+  // active — so the throwaway key never needs to live for hourly/daily cadences.
+  const hasActiveDemo = list.some((s) => s.active && s.intervalSec === DEMO_INTERVAL_SEC);
+  const delegated = delegationActive();
+  const canDelegate = signerKind === "wallet";
+
+  const delegate = async () => {
+    setDelegating(true);
+    try {
+      await startDelegation(DELEGATE_TTL_MS);
+      toast.push("Delegated signing on — Demo schedules run unattended", "ok");
+    } catch (e: any) {
+      toast.push(`Couldn't delegate signing: ${e?.message ?? e}`, "err");
+    } finally {
+      setDelegating(false);
+    }
+  };
 
   const create = () => {
     if (!parsed) { toast.push("Invalid recipient address or veil: link", "err"); return; }
@@ -71,6 +100,37 @@ export default function Scheduled() {
         </div>
       </div>
 
+      {/* delegated ("sign once") signing — external wallets only */}
+      {canDelegate && (delegated ? (
+        <div data-testid="delegate-banner" className="card p-4 flex items-center justify-between gap-3 border-poof-gold/40 bg-poof-gold/5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Zap className="h-4 w-4 text-poof-gold shrink-0" />
+            <span className="text-xs text-poof-muted">
+              <span className="text-poof-text font-medium">Delegated signing active</span> — Demo schedules
+              sign automatically until {delegateExpiresAt ? clockTime(delegateExpiresAt) : "—"}
+              {delegateExpiresAt && <span className="tabular-nums"> ({countdown(delegateExpiresAt)})</span>}.
+            </span>
+          </div>
+          <button data-testid="delegate-revoke" onClick={revokeDelegation} className="btn-ghost shrink-0 text-xs">
+            <ShieldOff className="h-3.5 w-3.5" /> Revoke
+          </button>
+        </div>
+      ) : hasActiveDemo ? (
+        <div className="card p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Zap className="h-4 w-4 text-poof-muted shrink-0" />
+            <span className="text-xs text-poof-muted">
+              Run Demo (1m) schedules unattended with a throwaway session key — no wallet prompt each minute.
+              Expires in {Math.round(DELEGATE_TTL_MS / 60_000)}m; holds only fee dust.
+            </span>
+          </div>
+          <button data-testid="delegate-start" onClick={delegate} disabled={delegating} className="btn-primary shrink-0 text-xs disabled:opacity-60">
+            {delegating ? <Spinner className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
+            {delegating ? "Creating key…" : "Delegate (demo)"}
+          </button>
+        </div>
+      ) : null)}
+
       {/* create */}
       <div className="card card-glow p-6 space-y-4">
         <div className="grid sm:grid-cols-2 gap-4">
@@ -98,9 +158,7 @@ export default function Scheduled() {
           </div>
           <div>
             <div className="label">Every</div>
-            <select data-testid="sched-interval" value={intervalSec} onChange={(e) => setIntervalSec(Number(e.target.value))} className="input text-sm">
-              {INTERVALS.map((i) => <option key={i.id} value={i.sec}>{i.label}</option>)}
-            </select>
+            <IntervalSelect value={intervalSec} onChange={setIntervalSec} testid="sched-interval" dropUp />
           </div>
         </div>
         <button data-testid="sched-create" onClick={create} className="btn-primary w-full">

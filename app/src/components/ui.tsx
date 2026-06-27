@@ -72,10 +72,42 @@ export function truncate(s: string, head = 8, tail = 6) {
   return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
 
+/**
+ * Copy text to the clipboard, returning whether it succeeded.
+ * The async Clipboard API only exists in secure contexts (HTTPS/localhost), so
+ * over a plain-HTTP LAN address or inside some webviews `navigator.clipboard`
+ * is undefined. Fall back to a hidden textarea + execCommand so the copy
+ * actually lands — and so callers can avoid showing "copied" on failure.
+ */
+export async function copyText(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export function AddressBadge({ value, label, testid }: { value: string; label?: string; testid?: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard?.writeText(value);
+  const copy = async () => {
+    if (!(await copyText(value))) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -108,8 +140,8 @@ export function ExplorerLink({ url, label = "explorer", testid }: { url: string;
 export function SecretReveal({ value, testid }: { value: string; testid?: string }) {
   const [shown, setShown] = useState(false);
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard?.writeText(value);
+  const copy = async () => {
+    if (!(await copyText(value))) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };

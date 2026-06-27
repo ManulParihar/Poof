@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useWallet } from "../store/wallet";
 import { useToast } from "../components/ui";
 import {
-  loadSchedules, saveSchedules, dueSchedules, runDue, makeSchedule,
+  loadSchedules, saveSchedules, dueSchedules, runDue, makeSchedule, fireableNow,
   type ScheduledPayment, type NewSchedule,
 } from "./schedule";
 
@@ -36,11 +36,21 @@ export function useSchedulePoller() {
       if (cancelled || running.current) return;
       if (useWallet.getState().busy) return; // don't contend with a manual tx
       const current = loadSchedules(seedHex);
-      if (dueSchedules(current).length === 0) return;
+      // While a delegation (session key) is active, only auto-fire the Demo (1m)
+      // cadence the user opted into — the session signer must not silently sign
+      // longer-interval schedules. Non-Demo schedules are deferred (left intact)
+      // and resume their normal wallet-prompt firing once delegation ends.
+      const delegated = useWallet.getState().delegationActive();
+      const fireable = fireableNow(current, delegated);
+      if (dueSchedules(fireable).length === 0) return;
       running.current = true;
       try {
-        const { results, list: out } = await runDue(current, send);
+        const { results, list: outFire } = await runDue(fireable, send);
         if (cancelled) return;
+        // Merge the fired subset back over the full list so deferred (non-Demo)
+        // schedules are preserved untouched.
+        const byId = new Map(outFire.map((s) => [s.id, s]));
+        const out = current.map((s) => byId.get(s.id) ?? s);
         saveSchedules(seedHex, out);
         emitChanged();
         for (const r of results) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  makeSchedule, isDue, dueSchedules, reschedule, runDue, type ScheduledPayment,
+  makeSchedule, isDue, dueSchedules, reschedule, runDue, fireableNow, type ScheduledPayment,
 } from "./schedule";
 
 const base = (over: Partial<ScheduledPayment> = {}): ScheduledPayment => ({
@@ -59,5 +59,17 @@ describe("schedule logic", () => {
   it("dueSchedules filters", () => {
     const list = [base({ id: "a", nextRun: 0 }), base({ id: "b", nextRun: 1e9 }), base({ id: "c", nextRun: 0, active: false })];
     expect(dueSchedules(list, 1000).map((s) => s.id)).toEqual(["a"]);
+  });
+
+  it("fireableNow restricts to Demo (1m) cadence while delegated", () => {
+    const list = [
+      base({ id: "demo", intervalSec: 60 }),
+      base({ id: "hourly", intervalSec: 3600 }),
+      base({ id: "daily", intervalSec: 86_400 }),
+    ];
+    // not delegated → everything is eligible
+    expect(fireableNow(list, false).map((s) => s.id)).toEqual(["demo", "hourly", "daily"]);
+    // delegated → only the Demo cadence may fire; others are deferred
+    expect(fireableNow(list, true).map((s) => s.id)).toEqual(["demo"]);
   });
 });
