@@ -4,6 +4,25 @@
 import type { Note } from "./crypto";
 import type { Signer } from "./signer";
 import type { DecoyRoundInfo } from "./decoy";
+import type { ActivityEntry } from "./activity";
+import type { SpendInput } from "./witness";
+import type { ConsolidationPlan } from "./spendSelection";
+
+/** Per-step progress of an immediate consolidation (balanced-tree merge). */
+export interface MergeProgress {
+  /** 1-based current round / total rounds. */
+  round: number;
+  totalRounds: number;
+  /** 1-based merge step completed / total merge steps across all rounds. */
+  step: number;
+  totalSteps: number;
+}
+
+/** Live state of an in-flight immediate consolidation, lifted into the store so it
+ *  survives navigation away from the Send/Withdraw page. */
+export interface MergeRunInfo extends MergeProgress {
+  currencyId: number;
+}
 
 export const CONTRACT_ID = "CDLDIXFXQHMGQI2P7F4A6JBKFLYCJND7UUSHCZ3TZ5UTZAGOM3WGDMXP";
 /** Ledger the contract was deployed at — the start for a full event scan so the
@@ -52,7 +71,11 @@ export interface StoredNote {
 }
 
 export type TxStatus = "building" | "proving" | "submitting" | "success" | "error";
-export type TxKind = "transfer" | "deposit" | "withdraw" | "receive" | "faucet" | "fund";
+export type TxKind = "transfer" | "self" | "deposit" | "withdraw" | "receive" | "faucet" | "fund";
+/** Where a self-transfer originated, when this device performed it. On-chain a
+ *  self-send / decoy / scheduled-self are indistinguishable; this is a best-effort,
+ *  local-only sub-label that degrades to plain "self" on other devices. */
+export type TxSource = "self" | "decoy" | "scheduled" | "merge";
 
 /** An activity-feed entry. */
 export interface TxRecord {
@@ -67,6 +90,8 @@ export interface TxRecord {
   createdAt: number;
   /** progress note shown in the UI while building/proving/submitting */
   stage?: string;
+  /** For self-transfers (kind === "self"): how it originated on this device. */
+  source?: TxSource;
 }
 
 /** The fee-paying Stellar account (separate from the Poof identity). */
@@ -118,11 +143,22 @@ export interface WalletState {
   /** Per-identity activity archive (keyed by seedHex) so disconnecting and
    *  reconnecting the same identity restores its local history. */
   txArchive: Record<string, TxRecord[]>;
+  /** Typed activity derived from chain events on each scan (deposit / receive /
+   *  transfer / withdraw) — the durable, correctly-classified feed. In-flight
+   *  actions are overlaid from `txs` until a scan picks them up here. */
+  activity: ActivityEntry[];
+  /** Per-identity derived-activity cache (keyed by seedHex) for instant display
+   *  before the first scan after reconnecting. */
+  activityArchive: Record<string, ActivityEntry[]>;
 
   // status flags
   busy: boolean; // a transact is in flight
   syncing: boolean; // a chain sync/scan is running
   feeBalance: string | null; // XLM balance of the fee account (display)
+  /** Runtime-only (never persisted): set by a caller right before a self-send so
+   *  the pushed TxRecord can be tagged "decoy"/"scheduled". Read-and-cleared by the
+   *  flow that creates the record, under the send mutex. */
+  pendingTxSource?: TxSource;
 
   // lifecycle
   createIdentity: (seedHex?: string) => Promise<void>;
@@ -168,6 +204,14 @@ export interface WalletState {
   /** Abort the active decoy run (after the current round/await settles). */
   stopDecoy: () => void;
 
+  // immediate consolidation run (lifted into the store like the decoy run, so the
+  // x-of-k progress stays visible if the user navigates away mid-merge; runtime
+  // only — never persisted).
+  /** True while an immediate `consolidateNow` is executing. */
+  mergeRunning: boolean;
+  /** Latest per-step progress of the active/last immediate merge (null when idle). */
+  mergeProgress: MergeRunInfo | null;
+
   // accounts
   fundFeeAccount: () => Promise<void>;
   refreshFeeBalance: () => Promise<void>;
@@ -180,6 +224,32 @@ export interface WalletState {
   // `currencyId` selects the asset; amounts are in that currency's base units.
   send: (currencyId: number, toPubkey: string, toEncPub: string, amount: bigint) => Promise<TransactResult>;
   deposit: (currencyId: number, amount: bigint) => Promise<TransactResult>;
+  /** Merge two specific notes of one asset into one (a self-transfer collapsing
+   *  2 notes → 1). Bypasses auto spend-selection so a consolidation driver can
+   *  combine exact pairs; builds against the current in-memory tree (no re-sync),
+   *  so same-round merges share one known root. */
+  mergeNotes: (currencyId: number, inputs: SpendInput[]) => Promise<TransactResult>;
+  /** Sync the chain, then report whether spending `amount` needs a multi-note
+   *  merge first (null = balance can't cover it; caller spends normally to surface
+   *  the right error). Used by Send/Withdraw to branch the UX before transacting. */
+  previewConsolidation: (currencyId: number, amount: bigint) => Promise<ConsolidationPlan | null>;
+  /** Immediately consolidate this identity's notes (balanced-tree merge with
+   *  settle-waits between rounds) until `amount` is spendable in ≤2 notes. Drives
+   *  `onProgress` per merge step; throws on failure. */
+  consolidateNow: (
+    currencyId: number,
+    amount: bigint,
+    opts?: { onProgress?: (p: MergeProgress) => void; signal?: AbortSignal }
+  ) => Promise<void>;
+  /** Perform ONE balanced-tree ROUND toward making `amount` spendable in ≤2
+   *  notes: syncs, pairs up the covering notes, and merges every pair against the
+   *  same root (no settle between pairs), then settles. Returns "done" when no
+   *  merge is needed (already ≤2 notes or balance can't cover it) or "merged"
+   *  when a round ran. `onMerge` fires once per completed pair-merge so callers
+   *  can surface live progress. Each pair retries a few times on a transient
+   *  failure before throwing. Drives the timed "Merge privately" poller, which
+   *  paces these rounds at randomized intervals. */
+  mergeStep: (currencyId: number, amount: bigint, onMerge?: () => void, shouldContinue?: () => boolean) => Promise<"merged" | "done" | "paused">;
   withdraw: (currencyId: number, amount: bigint, toStellar: string) => Promise<TransactResult>;
   /** Gasless withdraw: prove in-browser, then a relayer submits + pays the Stellar
    *  network fee, compensated by `fee`. Recipient nets `amount - fee`. Requires a

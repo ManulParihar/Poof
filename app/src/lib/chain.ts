@@ -203,6 +203,18 @@ export interface SubmitResult {
   leafIndices: [number, number];
 }
 
+/** True when a failed submit is a stale-sequence error (txBadSeq), the one we can
+ *  recover from by re-fetching the account. Reads the typed result code first,
+ *  falling back to a string match so an SDK shape change can't silently disable
+ *  the retry. */
+function isBadSeq(errorResult: unknown): boolean {
+  try {
+    const name = (errorResult as any)?.result?.()?.switch?.()?.name;
+    if (name === "txBadSeq") return true;
+  } catch { /* fall through to the stringified check */ }
+  try { return JSON.stringify(errorResult).includes("txBadSeq"); } catch { return false; }
+}
+
 export async function submitTransact(
   signer: Signer,
   proof: ProofBytes,
@@ -210,7 +222,6 @@ export async function submitTransact(
   ext: ExtDataWire
 ): Promise<SubmitResult> {
   const s = server();
-  const account = await s.getAccount(signer.publicKey);
   const nextBefore = await getNextLeafIndex(signer.publicKey).catch(() => 0);
 
   const op = new Contract(CONTRACT_ID).call(
@@ -219,32 +230,50 @@ export async function submitTransact(
     signalsScVal(publicSignals),
     extScVal(ext)
   );
-  const tx = new TransactionBuilder(account, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(op)
-    .setTimeout(120)
-    .build();
 
-  // Simulate, then EXPLICITLY sign the auth entries the deposit's token.transfer
-  // requires (a non-root require_auth on the depositor). The depositor is the
-  // signer (fee-payer), so we authorize each address-credential entry with it.
-  const sim = await s.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(sim)) throw new Error(`simulate: ${sim.error}`);
-  const validUntil = (await s.getLatestLedger()).sequence + 100;
-  const auth = (sim as rpc.Api.SimulateTransactionSuccessResponse).result?.auth ?? [];
-  if (auth.length) {
-    const signed = await Promise.all(
-      auth.map((e) =>
-        e.credentials().switch().name === "sorobanCredentialsAddress"
-          ? signer.authorizeEntry(e, validUntil)
-          : Promise.resolve(e)
-      )
-    );
-    (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.auth = signed;
+  // Build → simulate → sign → submit, retrying on a stale account sequence.
+  // Back-to-back transacts from the SAME source (a burst of delegated note
+  // merges) race the RPC's view of the account: the prior tx is already SUCCESS
+  // but getAccount still returns the old seqnum, so the freshly built tx lands a
+  // txBadSeq. Re-fetch the account and rebuild a few times, giving the RPC a beat
+  // to catch up, before surfacing the error.
+  const SEQ_MAX_ATTEMPTS = 5;
+  let sent: Awaited<ReturnType<typeof s.sendTransaction>> | undefined;
+  for (let attempt = 1; attempt <= SEQ_MAX_ATTEMPTS; attempt++) {
+    const account = await s.getAccount(signer.publicKey);
+    const tx = new TransactionBuilder(account, { fee: "1000000", networkPassphrase: NETWORK_PASSPHRASE })
+      .addOperation(op)
+      .setTimeout(120)
+      .build();
+
+    // Simulate, then EXPLICITLY sign the auth entries the deposit's token.transfer
+    // requires (a non-root require_auth on the depositor). The depositor is the
+    // signer (fee-payer), so we authorize each address-credential entry with it.
+    const sim = await s.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(sim)) throw new Error(`simulate: ${sim.error}`);
+    const validUntil = (await s.getLatestLedger()).sequence + 100;
+    const auth = (sim as rpc.Api.SimulateTransactionSuccessResponse).result?.auth ?? [];
+    if (auth.length) {
+      const signed = await Promise.all(
+        auth.map((e) =>
+          e.credentials().switch().name === "sorobanCredentialsAddress"
+            ? signer.authorizeEntry(e, validUntil)
+            : Promise.resolve(e)
+        )
+      );
+      (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.auth = signed;
+    }
+    const prepared = rpc.assembleTransaction(tx, sim).build();
+    const signedPrepared = await signer.signTransaction(prepared);
+    sent = await s.sendTransaction(signedPrepared);
+    if (sent.status !== "ERROR") break;
+    if (isBadSeq(sent.errorResult) && attempt < SEQ_MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, 800 * attempt)); // let the RPC's seqnum catch up
+      continue;
+    }
+    throw new Error(`submit error: ${JSON.stringify(sent.errorResult)}`);
   }
-  const prepared = rpc.assembleTransaction(tx, sim).build();
-  const signedPrepared = await signer.signTransaction(prepared);
-  const sent = await s.sendTransaction(signedPrepared);
-  if (sent.status === "ERROR") throw new Error(`submit error: ${JSON.stringify(sent.errorResult)}`);
+  if (!sent || sent.status === "ERROR") throw new Error("submit failed: exhausted sequence retries");
 
   const hash = sent.hash;
   // poll
@@ -267,6 +296,21 @@ export interface CommitmentEvent {
   ciphertext: Uint8Array;
   viewTag: number;
   ledger: number;
+  /** Hash of the transaction that emitted this event — groups the commitments
+   *  and nullifiers of one `transact` so the Activity feed can classify it. */
+  txHash?: string;
+  /** Real ledger close time (epoch ms) — the actual on-chain time the note was
+   *  committed, vs. when the client happened to scan. Absent for indexer rows. */
+  ledgerCloseTime?: number;
+}
+
+/** A `Nullifier(nf)` event — existence marks an input note as spent. Carried with
+ *  its tx hash so a spend can be paired with the outputs from the same transact. */
+export interface NullifierEvent {
+  nf: Uint8Array;
+  ledger: number;
+  txHash?: string;
+  ledgerCloseTime?: number;
 }
 
 // Fetch the full durable commitment history from the indexer's read API.
@@ -367,7 +411,17 @@ export async function scanContractEvents(
   return { events: out, clamped };
 }
 
-export async function getNewCommitments(startLedger?: number): Promise<CommitmentEvent[]> {
+/**
+ * Fetch the contract's `NewCommit` and `Nullifier` events in one scan, each
+ * tagged with its tx hash and ledger close time. Commitments drive the Merkle
+ * tree and note discovery; nullifiers + tx grouping let the Activity feed
+ * classify each transact (deposit / receive / transfer / withdraw) — see
+ * `lib/activity.ts`. The durable indexer backfill restores aged-out commitments
+ * only; nullifier/tx grouping for that prefix is the deferred indexer work.
+ */
+export async function getCommitmentsAndNullifiers(
+  startLedger?: number,
+): Promise<{ commitments: CommitmentEvent[]; nullifiers: NullifierEvent[] }> {
   const s = server();
   // Start from the contract's deploy ledger so the tree includes leaf 0 — a fixed
   // recent window misses the earliest commitments and corrupts the whole tree
@@ -377,18 +431,32 @@ export async function getNewCommitments(startLedger?: number): Promise<Commitmen
   const from = startLedger ?? CONTRACT_START_LEDGER;
   const { events: raw, clamped } = await scanContractEvents(s, CONTRACT_ID, from);
   const out: CommitmentEvent[] = [];
+  const nullifiers: NullifierEvent[] = [];
   for (const ev of raw) {
     const topics = ev.topic.map((t: xdr.ScVal) => scValToNative(t));
-    if (topics[0] !== "NewCommit") continue;
-    const data = scValToNative(ev.value);
-    // tuple (commitment, leaf_index, ciphertext, view_tag)
-    out.push({
-      commitment: Uint8Array.from(data[0] as Uint8Array),
-      leafIndex: Number(data[1]),
-      ciphertext: Uint8Array.from(data[2] as Uint8Array),
-      viewTag: Number(data[3]),
-      ledger: Number(ev.ledger),
-    });
+    const txHash: string | undefined = ev.txHash;
+    const ledgerCloseTime = ev.ledgerClosedAt ? Date.parse(ev.ledgerClosedAt) : undefined;
+    if (topics[0] === "NewCommit") {
+      const data = scValToNative(ev.value);
+      // tuple (commitment, leaf_index, ciphertext, view_tag)
+      out.push({
+        commitment: Uint8Array.from(data[0] as Uint8Array),
+        leafIndex: Number(data[1]),
+        ciphertext: Uint8Array.from(data[2] as Uint8Array),
+        viewTag: Number(data[3]),
+        ledger: Number(ev.ledger),
+        txHash,
+        ledgerCloseTime: Number.isNaN(ledgerCloseTime) ? undefined : ledgerCloseTime,
+      });
+    } else if (topics[0] === "Nullifier") {
+      // value is the bare 32-byte nullifier (not a tuple).
+      nullifiers.push({
+        nf: Uint8Array.from(scValToNative(ev.value) as Uint8Array),
+        ledger: Number(ev.ledger),
+        txHash,
+        ledgerCloseTime: Number.isNaN(ledgerCloseTime) ? undefined : ledgerCloseTime,
+      });
+    }
   }
   // Durable backfill: on a full scan, if RPC retention forced us to start above
   // the deploy ledger (clamped) or the earliest leaf is missing, the tree is
@@ -422,7 +490,13 @@ export async function getNewCommitments(startLedger?: number): Promise<Commitmen
       "tree. Start/repair the poof-indexer (VITE_INDEXER_URL).",
     );
   }
-  return merged;
+  return { commitments: merged, nullifiers };
+}
+
+/** Commitments only — the Merkle-tree / note-discovery path. Thin wrapper over
+ *  {@link getCommitmentsAndNullifiers} so existing callers are unaffected. */
+export async function getNewCommitments(startLedger?: number): Promise<CommitmentEvent[]> {
+  return (await getCommitmentsAndNullifiers(startLedger)).commitments;
 }
 
 export { toHex, fromHex, Address };

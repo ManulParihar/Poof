@@ -4,10 +4,10 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import {
-  initCrypto, deriveKeys, fieldToBytes, fromHex, toHex, nullifier, type Keys, type Note,
+  initCrypto, deriveKeys, fieldToBytes, fromHex, toHex, nullifier, commitment, type Keys, type Note,
 } from "../lib/crypto";
 import { ClientMerkleTree } from "../lib/merkleTree";
-import { buildDeposit, buildTransfer, buildWithdraw, type WitnessBundle } from "../lib/witness";
+import { buildDeposit, buildTransfer, buildWithdraw, type SpendInput, type WitnessBundle } from "../lib/witness";
 import { prove } from "../lib/prover";
 import { proofToBytes, publicSignalsToBytes } from "../lib/proof";
 import * as chain from "../lib/chain";
@@ -15,14 +15,16 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { LocalSigner, WalletKitSigner, walletSeedFromSignature, type Signer } from "../lib/signer";
 import * as walletkit from "../lib/walletkit";
 import { scanEvents } from "../lib/scan";
+import { deriveActivity, type ActivityEntry } from "../lib/activity";
 import { relayWithdraw } from "../lib/relayer";
 import { faucetFor, faucetSecret } from "../lib/faucet";
 import { currencyById, toBaseUnits } from "../lib/currencies";
-import { noteKey, selectSpendInputs, spendSelectionError } from "../lib/spendSelection";
+import { noteKey, planConsolidation, selectSpendInputs, spendSelectionError } from "../lib/spendSelection";
 import { validateStoredNotes } from "../lib/noteValidation";
 import { runDecoyRounds } from "../lib/decoy";
 import {
   type WalletState, type StoredNote, type TxRecord, type FeeAccount, type TransactResult,
+  type MergeProgress, type MergeRunInfo,
   CONTRACT_ID,
 } from "../lib/types";
 
@@ -56,6 +58,13 @@ function ensureKeys(seedHex: string): Keys {
 
 const uid = () => Math.random().toString(36).slice(2);
 const now = () => Date.now();
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Immediate consolidation retries a transiently-failing merge before giving up,
+// re-syncing between attempts (linear backoff: 2s, 4s, …). The failed tx left
+// its inputs unspent, so re-merging the same pair is safe.
+const MERGE_MAX_ATTEMPTS = 3;
+const MERGE_RETRY_BASE_MS = 2000;
 
 // localStorage JSON with bigint support
 const storage = createJSONStorage(() => localStorage, {
@@ -130,6 +139,11 @@ export const useWallet = create<Internal>()(
       // re-import) restores the up-to-date history — not just a disconnect-time snapshot.
       const withArchive = (s: Internal, txs: TxRecord[]): Partial<Internal> =>
         s.seedHex ? { txs, txArchive: { ...s.txArchive, [s.seedHex]: txs } } : { txs };
+      // Mirror the freshly-derived activity into activityArchive[seedHex] too, so a
+      // reconnect of the same identity shows its last-derived feed instantly (before
+      // the first scan re-derives it from chain).
+      const withActivityArchive = (s: Internal, activity: ActivityEntry[]): Partial<Internal> =>
+        s.seedHex ? { activity, activityArchive: { ...s.activityArchive, [s.seedHex]: activity } } : { activity };
       const pushTx = (rec: Omit<TxRecord, "id" | "createdAt">): string => {
         const id = uid();
         set((s) => withArchive(s, [{ id, createdAt: now(), ...rec }, ...s.txs]));
@@ -149,7 +163,12 @@ export const useWallet = create<Internal>()(
         const { seedHex } = get();
         if (!seedHex) throw new Error("wallet not ready");
         const signer = get().getSigner();
-        const txId = pushTx({ kind, currencyId, amount, status: "building", stage: "Assembling witness" });
+        // Consume any source tag a caller staged for this self-transfer, then clear
+        // it so it can't leak onto an unrelated later record. Safe under the send
+        // mutex (runExclusive serializes transacts).
+        const source = get().pendingTxSource;
+        if (source) set({ pendingTxSource: undefined });
+        const txId = pushTx({ kind, currencyId, amount, source, status: "building", stage: "Assembling witness" });
         try {
           updateTx(txId, { status: "proving", stage: "Generating zero-knowledge proof" });
           const { proof, publicSignals } = await prove(bundle.input);
@@ -228,9 +247,12 @@ export const useWallet = create<Internal>()(
         nextLeafIndex: null,
         txs: [],
         txArchive: {},
+        activity: [],
+        activityArchive: {},
         busy: false,
         syncing: false,
         feeBalance: null,
+        pendingTxSource: undefined,
         _feeSecret: null,
         _delegate: null,
 
@@ -239,6 +261,12 @@ export const useWallet = create<Internal>()(
         // user navigates away from and back to the Privacy page.
         decoyRunning: false,
         decoyProgress: null,
+
+        // Immediate consolidation run state (runtime only — never persisted).
+        // Lifted into the store so the x-of-k progress survives navigating away
+        // from Send/Withdraw mid-merge.
+        mergeRunning: false,
+        mergeProgress: null,
 
         // ── signer accessors ──
         getSigner: (): Signer => {
@@ -319,7 +347,8 @@ export const useWallet = create<Internal>()(
           try {
             return await runDecoyRounds({
               rounds, currencyId, minDelaySec, maxDelaySec,
-              send: get().send,
+              // tag each round's record as a decoy (best-effort, this device only)
+              send: (c, p, e, a) => { set({ pendingTxSource: "decoy" }); return get().send(c, p, e, a); },
               address: { pubkey: address.pubkey, encPub: address.encPub },
               balanceOf: () => get().balancesByCurrency[currencyId] ?? 0n,
               onRound: (info) => set({ decoyProgress: info }),
@@ -364,6 +393,7 @@ export const useWallet = create<Internal>()(
             notes: [],
             // restore this identity's archived activity (empty for a brand-new seed)
             txs: get().txArchive[hex] ?? [],
+            activity: get().activityArchive[hex] ?? [],
             balanceShielded: 0n,
             balancesByCurrency: {},
           });
@@ -401,6 +431,7 @@ export const useWallet = create<Internal>()(
             notes: [],
             // restore this wallet's archived activity (deterministic seed → stable key)
             txs: get().txArchive[hex] ?? [],
+            activity: get().activityArchive[hex] ?? [],
             balanceShielded: 0n,
             balancesByCurrency: {},
           });
@@ -411,8 +442,9 @@ export const useWallet = create<Internal>()(
 
         disconnect: () => {
           // Snapshot the active identity's activity so reconnecting restores it.
-          const { seedHex, txs, txArchive } = get();
+          const { seedHex, txs, txArchive, activity, activityArchive } = get();
           const archive = seedHex ? { ...txArchive, [seedHex]: txs } : txArchive;
+          const actArchive = seedHex ? { ...activityArchive, [seedHex]: activity } : activityArchive;
           KEYS = null;
           TREE = null;
           decoyAbort?.abort();
@@ -422,9 +454,10 @@ export const useWallet = create<Internal>()(
             signerKind: "local", connectedWalletId: null, connectedAddress: null,
             _feeSecret: null, _delegate: null, delegateExpiresAt: null,
             decoyRunning: false, decoyProgress: null,
+            mergeRunning: false, mergeProgress: null,
             notes: [], balanceShielded: 0n, balancesByCurrency: {},
             currentRoot: null, nextLeafIndex: null, txs: [], feeBalance: null,
-            txArchive: archive,
+            txArchive: archive, activity: [], activityArchive: actArchive,
           });
         },
 
@@ -438,9 +471,10 @@ export const useWallet = create<Internal>()(
             signerKind: "local", connectedWalletId: null, connectedAddress: null,
             _feeSecret: null, _delegate: null, delegateExpiresAt: null,
             decoyRunning: false, decoyProgress: null,
+            mergeRunning: false, mergeProgress: null,
             notes: [], balanceShielded: 0n, balancesByCurrency: {},
             currentRoot: null, nextLeafIndex: null, txs: [], feeBalance: null,
-            txArchive: {},
+            txArchive: {}, activity: [], activityArchive: {},
           });
         },
 
@@ -480,7 +514,7 @@ export const useWallet = create<Internal>()(
           const { feeAccount: fa, seedHex } = get();
           set({ syncing: true });
           try {
-            const events = await chain.getNewCommitments();
+            const { commitments: events, nullifiers } = await chain.getCommitmentsAndNullifiers();
             TREE = new ClientMerkleTree();
             T().insertMany(events.map((e) => chain.toHex(e.commitment)).map((h) => BigInt("0x" + h)));
             const root = fa ? await chain.getCurrentRoot(fa.publicKey).catch(() => localRootHex()) : localRootHex();
@@ -488,13 +522,17 @@ export const useWallet = create<Internal>()(
             // Authoritative spent-state reconcile before any spend selection relies
             // on these flags — prevents re-spending an already-spent note (#2).
             if (seedHex) notes = await reconcileSpentOnChain(notes, ensureKeys(seedHex), get().payerPublicKey());
-            set({
+            // Refresh the typed Activity feed too, so a spend's deposit/transfer/
+            // withdraw lands durably without needing a separate manual scan.
+            const activity = seedHex ? deriveActivity(ensureKeys(seedHex), events, nullifiers) : get().activity;
+            set((s) => ({
               currentRoot: root,
               nextLeafIndex: T().length,
               notes,
               balanceShielded: totalUnspent(notes),
               balancesByCurrency: balancesByCurrency(notes),
-            });
+              ...(seedHex ? withActivityArchive(s, activity) : {}),
+            }));
           } finally {
             set({ syncing: false });
           }
@@ -506,7 +544,7 @@ export const useWallet = create<Internal>()(
           const keys = ensureKeys(seedHex);
           set({ syncing: true });
           try {
-            const events = await chain.getNewCommitments();
+            const { commitments: events, nullifiers } = await chain.getCommitmentsAndNullifiers();
             // rebuild tree so leaf indices align
             TREE = new ClientMerkleTree();
             T().insertMany(events.map((e) => BigInt("0x" + chain.toHex(e.commitment))));
@@ -522,24 +560,20 @@ export const useWallet = create<Internal>()(
             // balance double-counts and a spend would fail with NullifierSpent.
             let notes = validateStoredNotes([...get().notes, ...fresh], events, keys.publicKey);
             notes = await reconcileSpentOnChain(notes, keys, get().payerPublicKey());
-            set({
+            // Reconstruct the typed Activity feed from chain events (deposit /
+            // receive / transfer / withdraw), correctly classified and stamped with
+            // the real ledger close time. This replaces the old per-note `receive`
+            // log, which mislabelled every re-discovered note (deposits, change,
+            // decoy self-sends) as "Receive".
+            const activity = deriveActivity(keys, events, nullifiers);
+            set((s) => ({
               notes,
               balanceShielded: totalUnspent(notes),
               balancesByCurrency: balancesByCurrency(notes),
               currentRoot: root,
               nextLeafIndex: T().length,
-            });
-
-            // Every freshly-discovered note is an incoming receipt: a payment from
-            // someone else, or one of our own self-sends (decoy boost / a schedule
-            // aimed at our own address) landing back. Record a `receive` entry per
-            // note so the Activity feed shows it. For a self-send this is the inbound
-            // leg that pairs with the `transfer` already logged when it went out.
-            // (Change notes from ordinary outbound transfers are added inline at spend
-            // time, so they're excluded from `fresh` and never miscounted here.)
-            for (const f of fresh) {
-              pushTx({ kind: "receive", currencyId: f.note.currencyId, amount: f.note.amount, status: "success" });
-            }
+              ...withActivityArchive(s, activity),
+            }));
             return fresh.length;
           } finally {
             set({ syncing: false });
@@ -609,6 +643,13 @@ export const useWallet = create<Internal>()(
           if (!seedHex) throw new Error("no identity");
           set({ busy: true });
           const keys = ensureKeys(seedHex);
+          // A send to our own pubkey is a self-transfer (manual self-send, decoy
+          // round, or scheduled-self) — on-chain identical to an outbound transfer,
+          // but it doesn't change our balance, so we label it distinctly. Default
+          // the source tag to "self" unless a caller (decoy/scheduler) already
+          // marked it more specifically.
+          const isSelf = BigInt(toPubkey) === keys.publicKey;
+          if (isSelf && !get().pendingTxSource) set({ pendingTxSource: "self" });
           let selected: Awaited<ReturnType<typeof syncAndSelect>>;
           try {
             selected = await syncAndSelect(keys, currencyId, amount);
@@ -625,9 +666,19 @@ export const useWallet = create<Internal>()(
           });
           const spentKeys = new Set(selected.notes.map((n) => noteKey(n.note)));
           const change = selected.change;
-          return runFlow("transfer", currencyId, amount, bundle, (res) => {
+          return runFlow(isSelf ? "self" : "transfer", currencyId, amount, bundle, (res) => {
             set((s) => {
               const notes = s.notes.map((n) => (spentKeys.has(noteKey(n.note)) ? { ...n, spent: true } : n));
+              // On a self-send the recipient (output 0) is also us, so record it —
+              // otherwise merging the whole balance to self leaves nothing tracked
+              // locally and the shielded balance reads zero until a rescan recovers
+              // it. (Mirrors mergeNotes, which pushes its self output.)
+              if (isSelf) {
+                notes.push({
+                  note: { amount, currencyId, pubkey: keys.publicKey, blinding: bundle.outputs[0].note.blinding },
+                  leafIndex: res.leafIndices[0], spent: false, createdAt: now(),
+                });
+              }
               if (change > 0n) {
                 notes.push({
                   note: { amount: change, currencyId, pubkey: keys.publicKey, blinding: bundle.outputs[1].note.blinding },
@@ -638,6 +689,193 @@ export const useWallet = create<Internal>()(
             });
           });
         }),
+
+        // Merge two SPECIFIC notes into one (self-transfer, amount = their sum,
+        // change = 0). Unlike send() this takes explicit inputs and does NOT
+        // re-sync the tree, so a consolidation driver can fire several merges in
+        // one round against a single known root. Pushes the merged note so the
+        // next round can chain on it after a settle.
+        mergeNotes: async (currencyId: number, inputs: SpendInput[]) => runExclusive(async () => {
+          const { seedHex } = get();
+          if (!seedHex) throw new Error("no identity");
+          if (inputs.length !== 2) throw new Error("a merge takes exactly 2 notes");
+          set({ busy: true, pendingTxSource: "merge" });
+          const keys = ensureKeys(seedHex);
+          const sumIn = inputs[0].note.amount + inputs[1].note.amount;
+          let bundle: WitnessBundle;
+          try {
+            bundle = buildTransfer({
+              tree: T(), sk: keys.spendKey, selfPub: keys.publicKey, selfEncPub: keys.encPublic,
+              inputs, amount: sumIn, recipientPub: keys.publicKey, recipientEncPub: keys.encPublic,
+              settlementAddress: get().payerPublicKey()!,
+            });
+          } catch (e) {
+            set({ busy: false });
+            throw e;
+          }
+          const spentKeys = new Set(inputs.map((i) => noteKey(i.note)));
+          return runFlow("self", currencyId, sumIn, bundle, (res) => {
+            set((s) => {
+              const notes = s.notes.map((n) => (spentKeys.has(noteKey(n.note)) ? { ...n, spent: true } : n));
+              // the merged note (output 0, the self-recipient) lands at leafIndices[0]
+              notes.push({
+                note: { amount: sumIn, currencyId, pubkey: keys.publicKey, blinding: bundle.outputs[0].note.blinding },
+                leafIndex: res.leafIndices[0], spent: false, createdAt: now(),
+              });
+              return { notes };
+            });
+          });
+        }),
+
+        previewConsolidation: async (currencyId: number, amount: bigint) => {
+          const { seedHex } = get();
+          if (!seedHex) return null;
+          const keys = ensureKeys(seedHex);
+          await get().syncChain();
+          const { plan } = planConsolidation(get().notes, T(), keys.publicKey, currencyId, amount);
+          return plan;
+        },
+
+        consolidateNow: async (
+          currencyId: number, amount: bigint,
+          opts?: { onProgress?: (p: MergeProgress) => void; signal?: AbortSignal }
+        ) => {
+          const { seedHex } = get();
+          if (!seedHex) throw new Error("no identity");
+          const keys = ensureKeys(seedHex);
+          const signal = opts?.signal;
+          // Fresh tree + notes (recovers self-notes, advances leaf count) so the
+          // covering notes resolve to current leaf indices.
+          await runExclusive(() => get().scanForNotes());
+          const { plan } = planConsolidation(get().notes, T(), keys.publicKey, currencyId, amount);
+          if (!plan || plan.rounds === 0) return; // already spendable in ≤2 notes
+          const totalRounds = plan.rounds;
+          const totalSteps = plan.totalMerges;
+          let step = 0;
+          // Mirror progress into the store (survives navigation) AND the optional
+          // caller callback.
+          const report = (round: number) => {
+            const info: MergeRunInfo = { round, totalRounds, step, totalSteps, currencyId };
+            set({ mergeProgress: info });
+            opts?.onProgress?.(info);
+          };
+          // A single merge can fail transiently (an on-chain "FAILED" from root
+          // contention/sequence races, or brief RPC/tree lag). Rather than abort
+          // the whole consolidation, retry a few times with backoff, re-syncing
+          // first so we resolve fresh leaf indices and build against the live root.
+          // The failed tx left the inputs UNSPENT, so a re-merge of the same pair
+          // is safe; if a prior attempt had actually landed, the note resolves as
+          // already merged and we skip it.
+          const mergeOnePair = async (a: Note, b: Note): Promise<number> => {
+            let lastErr: unknown;
+            for (let attempt = 1; attempt <= MERGE_MAX_ATTEMPTS; attempt++) {
+              if (signal?.aborted) throw new Error("merge cancelled");
+              const ai = T().indexOf(commitment(a));
+              const bi = T().indexOf(commitment(b));
+              if (ai < 0 || bi < 0) throw treeOutOfSyncError();
+              try {
+                const res = await get().mergeNotes(currencyId, [
+                  { note: a, leafIndex: ai },
+                  { note: b, leafIndex: bi },
+                ]);
+                return res.leafIndices[0];
+              } catch (e) {
+                lastErr = e;
+                if (attempt >= MERGE_MAX_ATTEMPTS) break;
+                if (signal?.aborted) throw new Error("merge cancelled");
+                await sleep(MERGE_RETRY_BASE_MS * attempt);
+                await runExclusive(() => get().scanForNotes()); // refresh before retry
+              }
+            }
+            throw lastErr;
+          };
+          set({ mergeRunning: true });
+          report(1);
+          try {
+            // Round 0 frontier = the covering notes; later rounds chain on the
+            // merged outputs. Leaf indices are re-resolved per merge (append-only,
+            // so a note's index is stable, but the tree is rebuilt between rounds).
+            let frontier: Note[] = plan.coveringNotes.map((s) => s.note);
+            for (let round = 1; frontier.length > 2; round++) {
+              if (signal?.aborted) throw new Error("merge cancelled");
+              const producedLeaves: number[] = [];
+              let carried: Note | null = null;
+              for (let i = 0; i < frontier.length; i += 2) {
+                if (i + 1 >= frontier.length) { carried = frontier[i]; break; }
+                if (signal?.aborted) throw new Error("merge cancelled");
+                producedLeaves.push(await mergeOnePair(frontier[i], frontier[i + 1]));
+                step++;
+                report(round);
+              }
+              // Settle so the merged commitments land and the tree/notes pick them
+              // up before the next round resolves their paths.
+              await runExclusive(() => get().scanForNotes());
+              const settled = get().notes;
+              const atLeaf = (li: number): Note => {
+                const found = settled.find((n) => n.leafIndex === li && !n.spent);
+                if (!found) throw treeOutOfSyncError();
+                return found.note;
+              };
+              frontier = [...producedLeaves.map(atLeaf), ...(carried ? [carried] : [])];
+            }
+          } finally {
+            set({ mergeRunning: false, mergeProgress: null });
+          }
+        },
+
+        mergeStep: async (currencyId: number, amount: bigint, onMerge?: () => void, shouldContinue?: () => boolean) => {
+          const { seedHex } = get();
+          if (!seedHex) return "done";
+          const keys = ensureKeys(seedHex);
+          // Fresh view so the covering set + leaf indices are current (reload-safe:
+          // the frontier is recomputed every time from on-chain state).
+          await runExclusive(() => get().scanForNotes());
+          const { plan } = planConsolidation(get().notes, T(), keys.publicKey, currencyId, amount);
+          if (!plan || plan.rounds === 0) return "done";
+          // Merge one pair, retrying a few times on a transient on-chain "FAILED"
+          // or RPC/tree lag. A failed tx leaves its inputs UNSPENT, so re-merging
+          // the same pair is safe; we re-resolve leaf indices against the live tree
+          // each attempt (and re-sync between attempts).
+          const mergeOnePair = async (a: Note, b: Note) => {
+            let lastErr: unknown;
+            for (let attempt = 1; attempt <= MERGE_MAX_ATTEMPTS; attempt++) {
+              const ai = T().indexOf(commitment(a));
+              const bi = T().indexOf(commitment(b));
+              if (ai < 0 || bi < 0) throw treeOutOfSyncError();
+              try {
+                await get().mergeNotes(currencyId, [
+                  { note: a, leafIndex: ai },
+                  { note: b, leafIndex: bi },
+                ]);
+                return;
+              } catch (e) {
+                lastErr = e;
+                if (attempt >= MERGE_MAX_ATTEMPTS) break;
+                await sleep(MERGE_RETRY_BASE_MS * attempt);
+                await runExclusive(() => get().scanForNotes());
+              }
+            }
+            throw lastErr;
+          };
+          // Execute one balanced-tree round: pair up all covering notes and merge
+          // each pair. All pairs build proofs against the same root so they don't
+          // need an intermediate settle-wait between them, only after the round.
+          const frontier = plan.coveringNotes.map((s) => s.note);
+          for (let i = 0; i + 1 < frontier.length; i += 2) {
+            // Re-check before each pair that we can still sign silently. A
+            // delegation can lapse mid-round; without this, getSigner() silently
+            // falls back to the external wallet and prompts in the background
+            // (the surprise "user rejected" popups). Stop instead and report
+            // "paused" so the caller can surface re-authorization — partial
+            // progress is kept (the round re-plans from on-chain state).
+            if (shouldContinue && !shouldContinue()) return "paused";
+            await mergeOnePair(frontier[i], frontier[i + 1]);
+            onMerge?.();
+          }
+          // Settle so the merged outputs land in the tree before the next round.
+          await runExclusive(() => get().scanForNotes());
+          return "merged";
+        },
 
         withdraw: async (currencyId: number, amount: bigint, toStellar: string) => runExclusive(async () => {
           const { seedHex } = get();
@@ -752,7 +990,9 @@ export const useWallet = create<Internal>()(
       partialize: (s) => ({
         initialised: s.initialised, seedHex: s.seedHex, address: s.address,
         feeAccount: s.feeAccount, _feeSecret: s._feeSecret, notes: s.notes,
-        txs: s.txs, txArchive: s.txArchive, balanceShielded: s.balanceShielded,
+        txs: s.txs, txArchive: s.txArchive,
+        activity: s.activity, activityArchive: s.activityArchive,
+        balanceShielded: s.balanceShielded,
         balancesByCurrency: s.balancesByCurrency,
         signerKind: s.signerKind, connectedWalletId: s.connectedWalletId,
         connectedAddress: s.connectedAddress,
